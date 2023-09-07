@@ -3,17 +3,31 @@ package udp
 import (
 	"bytes"
 	"encoding/binary"
+	"github.com/mangenotwork/common/utils"
 )
 
-func intToBytes(n int) ([]byte, error) {
+func int64ToBytes(n int64) ([]byte, error) {
 	buf := bytes.NewBuffer([]byte{})
-	err := binary.Write(buf, binary.BigEndian, int64(n))
+	err := binary.Write(buf, binary.BigEndian, n)
 	return buf.Bytes(), err
 }
 
+func intToBytes(n int) ([]byte, error) {
+	return int64ToBytes(int64(n))
+}
+
 func bytesToInt(bys []byte) (int, error) {
+	i, err := bytesToInt64(bys)
+	return int(i), err
+}
+
+func bytesToInt64(bys []byte) (int64, error) {
 	buf := bytes.NewBuffer(bys)
 	var data int64
 	err := binary.Read(buf, binary.BigEndian, &data)
-	return int(data), err
+	return data, err
+}
+
+func id() int64 {
+	return utils.ID()
 }

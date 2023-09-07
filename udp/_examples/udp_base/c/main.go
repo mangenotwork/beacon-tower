@@ -2,20 +2,39 @@ package main
 
 import (
 	"beacon-tower/udp"
+	"fmt"
+	"github.com/mangenotwork/common/log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
 func main() {
 	client := udp.NewClient("127.0.0.1:12345")
 	client.ConnectServers() // 连接服务器
+	n := 0
 	for {
-		time.Sleep(1 * time.Second)
-		client.Put("case1", []byte(txt))
-		time.Sleep(1 * time.Second)
-		client.Put("case2", []byte("hello"))
+		n++
+		//time.Sleep(1 * time.Second)
+		//client.Put("case1", []byte(txt))
+		//time.Sleep(1 * time.Second)
+		time.Sleep(100 * time.Millisecond)
+		client.Put("case2", []byte(fmt.Sprintf("hello : %d", n)))
+		log.Info("n = ", n)
 	}
 
-	select {}
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL, syscall.SIGHUP, syscall.SIGQUIT)
+	select {
+	case s := <-ch:
+		log.Info("通知退出....")
+		if i, ok := s.(syscall.Signal); ok {
+			os.Exit(int(i))
+		} else {
+			os.Exit(0)
+		}
+	}
 }
 
 var txt = `hello; 你好这是一个测试数据,哈哈哈哈哈哈，你好你好世界,aaaaaaa!!!!!

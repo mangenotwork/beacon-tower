@@ -63,7 +63,7 @@ func (s *Servers) Run() {
 		if err != nil {
 			log.ErrorF("error during read: %s", err)
 		}
-		log.InfoF("<%s> %s\n", remoteAddr, data[:n])
+		//log.InfoF("<%s> %s\n", remoteAddr, data[:n])
 		log.Info("解包....size = ", n)
 		packet, err := PacketDecrypt(s.secretKey, data, n)
 		if err != nil {
@@ -86,7 +86,7 @@ func (s *Servers) Run() {
 				// 验证签名
 				if !SignCheck(remoteAddr.String(), packet.Sign) {
 					log.Info("签名失败...")
-					s.ReplyPut(remoteAddr, 1)
+					s.ReplyPut(remoteAddr, 0, 1)
 				} else {
 					log.Info("签名成功...")
 					//log.Info("收到数据: ", string(packet.Data))
@@ -101,11 +101,17 @@ func (s *Servers) Run() {
 						fn(s, putData.Body)
 					}
 
-					s.ReplyPut(remoteAddr, 0)
+					s.ReplyPut(remoteAddr, putData.Id, 0)
 				}
 
 			case CommandHeartbeat: // 自行维护外部不可改变
 				log.Info("接收到心跳包...")
+				if string(packet.Data) != s.connectCode {
+					log.Info("未知客户端，连接code不正确...")
+					return
+				}
+				// 下发签名
+				s.ReplyConnect(remoteAddr)
 
 			default:
 				// 未知包丢弃
@@ -134,8 +140,9 @@ func (s *Servers) Put(client *net.UDPAddr, data []byte) {
 }
 
 type Reply struct {
-	Type int
-	Data []byte
+	Type  int
+	PutId int64
+	Data  []byte
 }
 
 func (s *Servers) ReplyConnect(client *net.UDPAddr) {
@@ -159,11 +166,12 @@ func (s *Servers) ReplyConnect(client *net.UDPAddr) {
 }
 
 // ReplyPut  响应put  state:0x0 成功   state:0x1 签名失败
-func (s *Servers) ReplyPut(client *net.UDPAddr, state int) {
-	stateB, _ := intToBytes(state)
+func (s *Servers) ReplyPut(client *net.UDPAddr, id, state int64) {
+	stateB, _ := int64ToBytes(state)
 	reply := &Reply{
-		Type: int(CommandPut),
-		Data: stateB,
+		Type:  int(CommandPut),
+		PutId: id,
+		Data:  stateB,
 	}
 	b, e := ObjToByte(reply)
 	if e != nil {

@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type Client struct {
 	state       int    // 0:未连接   1:连接成功  2:server端丢失
 	sign        string // 签名
 	secretKey   string // 数据传输加密解密秘钥
+
 }
 
 type ClientConf struct {
@@ -27,6 +29,7 @@ type ClientConf struct {
 func NewClient(host string, conf ...ClientConf) *Client {
 	c := &Client{
 		ServersHost: host,
+		state:       0,
 	}
 	if len(conf) >= 1 {
 		if len(conf[0].ConnectCode) > 0 {
@@ -74,35 +77,41 @@ func NewClient(host string, conf ...ClientConf) *Client {
 				log.Info(reply.Type, string(reply.Data))
 
 				switch CommandCode(reply.Type) {
-				case CommandConnect:
+				case CommandConnect: // 连接包与心跳包的反馈会触发
 					log.Info("收到连接的反馈与下发的签名: ", string(reply.Data))
 					// 存储签名
 					c.sign = string(reply.Data)
 					c.state = 1
+					// 将积压的数据进行发送
+					c.SendJiYa()
 				case CommandPut:
 					if c.sign != packet.Sign {
 						log.Info("未知主机认证!")
 						return
 					}
-					ackState, err := bytesToInt(reply.Data)
+					res, err := bytesToInt64(reply.Data)
 					if err != nil {
 						log.Error("解析ackState失败, err = ", err)
 					}
-					log.Info("ackState = ", ackState)
 
-					if ackState == 0 {
-						// 发送成功
+					if res == 1 {
+						// 签名错误
+						log.Error("签名错误")
+						c.ConnectServers()
+						break
 					}
 
-					if ackState == 1 {
-						// 发送失败
-					}
-
+					// 服务端以确认收到删除对应的数据
+					log.Info("putId = ", reply.PutId)
+					JiYa.Delete(reply.PutId)
 				}
 
 			}
 		}
 	}()
+
+	// 时间轮,心跳维护，动态刷新签名
+	c.timeWheel()
 
 	return c
 }
@@ -127,7 +136,7 @@ func (c *Client) Read(f func(data []byte)) {
 			}
 			log.InfoF("<%s> %s\n", remoteAddr, data[:n])
 			log.Info("解包....")
-			PacketDecrypt(c.secretKey, data, n)
+			_, _ = PacketDecrypt(c.secretKey, data, n)
 			f(data)
 		}
 	}()
@@ -142,16 +151,20 @@ func (c *Client) Write(data []byte) {
 }
 
 func (c *Client) Put(funcLabel string, data []byte) {
-R:
-	if c.state != 1 {
-		log.Info("还未认证连接")
-		c.ConnectServers()
-		time.Sleep(100 * time.Millisecond)
-		goto R
-	}
+
 	putData := PutData{
 		Label: funcLabel,
+		Id:    id(),
 		Body:  data,
+	}
+	// 数据被积压，占时保存
+	log.Info("putData.Id = ", putData.Id)
+	JiYa.Store(putData.Id, putData)
+
+	// 未与servers端确认连接，不发送数据
+	if c.state != 1 {
+		log.Info("还未认证连接")
+		return
 	}
 	b, err := ObjToByte(putData)
 	if err != nil {
@@ -184,4 +197,47 @@ func (c *Client) DefaultConnectCode() {
 
 func (c *Client) DefaultSecretKey() {
 	c.secretKey = DefaultSecretKey
+}
+
+// 时间轮，持续制定时间发送心跳包
+func (c *Client) timeWheel() {
+	go func() {
+		tTime := time.Duration(5) // 时间轮5秒
+		for {
+			// 5s维护一个心跳，s端收到心跳会返回新的签名
+			timer := time.NewTimer(tTime * time.Second)
+			select {
+			case t := <-timer.C:
+				// 这个时候表示连接不存在
+				c.state = 0
+				log.Info("发送心跳...", t)
+				data, err := PacketEncoder(CommandHeartbeat, c.name, c.sign, c.secretKey, []byte(c.connectCode))
+				if err != nil {
+					log.Error(err)
+				}
+				c.Write(data)
+			}
+		}
+	}()
+}
+
+// JiYa 积压的数据，所有发送的数据都会到这里，只有服务端确认的数据才会被删除
+var JiYa sync.Map
+
+// SendJiYa 发送积压的数据，
+func (c *Client) SendJiYa() {
+	JiYa.Range(func(key, value any) bool {
+		log.Info("重发 key = ", key)
+		b, err := ObjToByte(value.(PutData))
+		if err != nil {
+			log.Error("ObjToByte err = ", err)
+		}
+		packet, err := PacketEncoder(CommandPut, c.name, c.sign, c.secretKey, b)
+		if err != nil {
+			log.Error(err)
+		}
+		c.Write(packet)
+		return true
+	})
+
 }
