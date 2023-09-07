@@ -4,6 +4,7 @@ import (
 	"beacon-tower/udp"
 	"log"
 	"os"
+	"time"
 )
 
 var testFile = "test.txt"
@@ -17,7 +18,16 @@ func main() {
 	}
 	s.PutHandleFunc("case1", Case1)
 	s.PutHandleFunc("case2", Case2)
+
+	go func() {
+		for {
+			time.Sleep(2 * time.Second)
+			udp.HeartbeatTableShow()
+		}
+	}()
+
 	s.Run()
+
 }
 
 func Case1(s *udp.Servers, body []byte) {

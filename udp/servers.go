@@ -3,6 +3,8 @@ package udp
 import (
 	"github.com/mangenotwork/common/log"
 	"net"
+	"sync"
+	"time"
 )
 
 type Servers struct {
@@ -72,12 +74,14 @@ func (s *Servers) Run() {
 		}
 		go func() {
 			switch packet.Command {
-			case CommandConnect: // 自行维护，外部不可改变
-				log.Info("请求连接...")
+			case CommandConnect, CommandHeartbeat: // 自行维护，外部不可改变
+				log.Info("请求连接或心跳包...")
 				if string(packet.Data) != s.connectCode {
 					log.Info("未知客户端，连接code不正确...")
 					return
 				}
+				// 记录c端心跳表，用于记录c端是否离线
+				HeartbeatTable.Store(remoteAddr.IP.String(), time.Now().Unix())
 				// 下发签名
 				s.ReplyConnect(remoteAddr)
 
@@ -104,14 +108,15 @@ func (s *Servers) Run() {
 					s.ReplyPut(remoteAddr, putData.Id, 0)
 				}
 
-			case CommandHeartbeat: // 自行维护外部不可改变
-				log.Info("接收到心跳包...")
-				if string(packet.Data) != s.connectCode {
-					log.Info("未知客户端，连接code不正确...")
-					return
-				}
-				// 下发签名
-				s.ReplyConnect(remoteAddr)
+			//case CommandHeartbeat: // 自行维护外部不可改变
+			//	log.Info("接收到心跳包...")
+			//	if string(packet.Data) != s.connectCode {
+			//		log.Info("未知客户端，连接code不正确...")
+			//		return
+			//	}
+			//	HeartbeatTable.Store(remoteAddr.String(), time.Now().Unix())
+			//	// 下发签名
+			//	s.ReplyConnect(remoteAddr)
 
 			default:
 				// 未知包丢弃
@@ -217,4 +222,22 @@ type ClientAddr struct {
 type ClientConnectObj struct {
 	IP   string
 	Addr *net.UDPAddr
+}
+
+// TODO ... 要定下来确定ip下的节点离线，还是name下的任意节点离线?
+var HeartbeatTable sync.Map
+
+func HeartbeatTableShow() {
+	log.Info("+++++++++++++++++++++++++++")
+	t := time.Now().Unix()
+	HeartbeatTable.Range(func(key, value any) bool {
+		log.Info(key, value, t)
+		if t-value.(int64) > 5 {
+			log.InfoF("node:%s 离线", key)
+		} else {
+			log.InfoF("node:%s 在线 %d", key, value)
+		}
+		return true
+	})
+	log.Info("+++++++++++++++++++++++++++")
 }

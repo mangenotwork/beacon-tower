@@ -2,7 +2,6 @@ package main
 
 import (
 	"beacon-tower/udp"
-	"fmt"
 	"github.com/mangenotwork/common/log"
 	"os"
 	"os/signal"
@@ -18,10 +17,10 @@ func main() {
 		n++
 		//time.Sleep(1 * time.Second)
 		//client.Put("case1", []byte(txt))
-		//time.Sleep(1 * time.Second)
-		time.Sleep(100 * time.Millisecond)
-		client.Put("case2", []byte(fmt.Sprintf("hello : %d", n)))
-		log.Info("n = ", n)
+		time.Sleep(3 * time.Second)
+		//time.Sleep(100 * time.Millisecond)
+		//client.Put("case2", []byte(fmt.Sprintf("hello : %d", n)))
+		//log.Info("n = ", n)
 	}
 
 	ch := make(chan os.Signal, 1)
