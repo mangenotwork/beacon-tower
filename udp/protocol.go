@@ -2,18 +2,27 @@ package udp
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 )
 
-// 包设计 总包大小 548字节
+// Packet 包设计 总包大小 548字节
 // 第1字节  1字节 指令确认是什么数据类型
 // 第2~8字节 7字节  名字  --- 这个设计是确认谁是谁 名字对应多个ip 每个ip对应一个conn  name[{ip1:conn},{ip2:conn}]
 // 9~16字节  7字节  签名由对方签发，相互保存，随时会变
 // 第16~548 533字节  字节是数据内容
 // 数据使用 des加密
 // 使用gzip压缩
+type Packet struct {
+	Command CommandCode
+	Name    string
+	Sign    string
+	Data    []byte
+}
 
 // PacketEncoder 封包
 func PacketEncoder(cmd CommandCode, name, sign string, data []byte) ([]byte, error) {
@@ -52,37 +61,64 @@ func PacketEncoder(cmd CommandCode, name, sign string, data []byte) ([]byte, err
 }
 
 // PacketDecrypt 解包
-func PacketDecrypt(data []byte, n int) {
+func PacketDecrypt(data []byte, n int) *Packet {
 	if n < 15 {
 		fmt.Println("空包")
-		return
+		return nil
 	}
-	command := CommandCode(uint8(data[0:1][0]))
-	fmt.Println("command = ", command)
+	command := CommandCode(data[0:1][0])
 	name := data[1:8]
-	fmt.Println("name = ", string(name))
 	sign := string(data[8:15])
-	fmt.Println("sign = ", string(sign))
-	txt := data[15:n]
-	fmt.Println("txt = ", string(txt))
-
-	switch command {
-	case CommandConnect:
-		log.Println("请求连接...")
-		// TODO 下发签名
-
-	case CommandPut:
-		log.Println("接收发送来的数据...")
-		// TODO 验证签名
-		if sign != "1234567" {
-			log.Println("未知客户端")
-		}
-
-	case CommandHeartbeat:
-		log.Println("接收到心跳包...")
-
+	return &Packet{
+		Command: command,
+		Name:    string(name),
+		Sign:    string(sign),
+		Data:    data[15:n],
 	}
+}
 
+// DataEncoder 数据量大，使用 json 序列化+gzip压缩
+func DataEncoder(obj interface{}) ([]byte, error) {
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return []byte(""), err
+	}
+	return GzipCompress(b), nil
+}
+
+// DataDecoder 解码
+func DataDecoder(data []byte, obj interface{}) error {
+	b, err := GzipDecompress(data)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, obj)
+}
+
+// GzipCompress gzip压缩
+func GzipCompress(src []byte) []byte {
+	var in bytes.Buffer
+	w, err := gzip.NewWriterLevel(&in, gzip.BestCompression)
+	_, err = w.Write(src)
+	err = w.Close()
+	if err != nil {
+		log.Println(err)
+	}
+	return in.Bytes()
+}
+
+// GzipDecompress gzip解压
+func GzipDecompress(src []byte) ([]byte, error) {
+	reader := bytes.NewReader(src)
+	gr, err := gzip.NewReader(reader)
+	if err != nil {
+		return []byte(""), err
+	}
+	bf := make([]byte, 0)
+	buf := bytes.NewBuffer(bf)
+	_, err = io.Copy(buf, gr)
+	err = gr.Close()
+	return buf.Bytes(), nil
 }
 
 // des加密解密
