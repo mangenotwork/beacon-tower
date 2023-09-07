@@ -1,8 +1,23 @@
 package udp
 
-import "sync"
+import (
+	"math/rand"
+	"sync"
+	"time"
+)
 
-// 存储下发的签名，异步持久化到磁盘
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
+func createSign() string {
+	b := make([]byte, 7)
+	for i := range b {
+		b[i] = SignLetterBytes[rand.Intn(len(SignLetterBytes))]
+	}
+	return string(b)
+}
+
 var signMap sync.Map
 
 func SignStore(addr, sign string) {
@@ -10,18 +25,17 @@ func SignStore(addr, sign string) {
 }
 
 func SignCheck(addr, sign string) bool {
-	v, _ := signMap.Load(addr)
-	if v.(string) == sign {
+	v, ok := signMap.Load(addr)
+	if ok && v.(string) == sign {
 		return true
 	}
 	return false
 }
 
 func SignGet(addr string) string {
-	v, _ := signMap.Load(addr)
+	v, ok := signMap.Load(addr)
+	if !ok {
+		return ""
+	}
 	return v.(string)
-}
-
-// Persistent TODO 持久存储
-func Persistent() {
 }

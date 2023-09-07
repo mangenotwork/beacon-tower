@@ -3,11 +3,12 @@ package udp
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
+	"crypto/des"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
+	"github.com/mangenotwork/common/log"
 	"io"
-	"log"
 )
 
 // Packet 包设计 总包大小 548字节
@@ -25,7 +26,7 @@ type Packet struct {
 }
 
 // PacketEncoder 封包
-func PacketEncoder(cmd CommandCode, name, sign string, data []byte) ([]byte, error) {
+func PacketEncoder(cmd CommandCode, name, sign, secret string, data []byte) ([]byte, error) {
 	var (
 		err    error
 		stream []byte
@@ -40,7 +41,7 @@ func PacketEncoder(cmd CommandCode, name, sign string, data []byte) ([]byte, err
 		}
 		_ = binary.Write(buf, binary.LittleEndian, []byte(name))
 	} else if ln > 7 {
-		return nil, fmt.Errorf("name length above 7")
+		return nil, ErrNmeLengthAbove
 	} else {
 		_ = binary.Write(buf, binary.LittleEndian, []byte("0000000"))
 	}
@@ -49,10 +50,20 @@ func PacketEncoder(cmd CommandCode, name, sign string, data []byte) ([]byte, err
 	} else {
 		_ = binary.Write(buf, binary.LittleEndian, []byte(sign))
 	}
-	if len(data) > 450 {
-		return nil, fmt.Errorf("数据大于 540个字节, 建议拆分.")
+	log.Info("源数据 : ", len(data))
+	// 压缩数据
+	//d := GzipCompress(data)
+	d := ZlibCompress(data)
+	log.Info("压缩后数据长度: ", len(d))
+
+	// 加密数据
+	d = desECBEncrypt(d, []byte(secret))
+	log.Info("加密数据 : ", len(d))
+
+	if len(d) > 540 {
+		log.Error(ErrDataLengthAbove)
 	}
-	err = binary.Write(buf, binary.LittleEndian, data)
+	err = binary.Write(buf, binary.LittleEndian, d)
 	if err != nil {
 		return stream, err
 	}
@@ -61,38 +72,43 @@ func PacketEncoder(cmd CommandCode, name, sign string, data []byte) ([]byte, err
 }
 
 // PacketDecrypt 解包
-func PacketDecrypt(data []byte, n int) *Packet {
+func PacketDecrypt(secret string, data []byte, n int) (*Packet, error) {
+	var err error
 	if n < 15 {
-		fmt.Println("空包")
-		return nil
+		log.Info("空包")
+		return nil, ErrNonePacket
 	}
 	command := CommandCode(data[0:1][0])
-	name := data[1:8]
+	name := string(data[1:8])
 	sign := string(data[8:15])
+	b := data[15:n]
+	// 解密数据
+	b = desECBDecrypt(b, []byte(secret))
+	// 解压数据
+	//b, err := GzipDecompress(data[15:n])
+	b, err = ZlibDecompress(b)
+	if err != nil {
+		log.Error("解压数据失败 err: ", err)
+		return nil, err
+	}
 	return &Packet{
 		Command: command,
-		Name:    string(name),
-		Sign:    string(sign),
-		Data:    data[15:n],
-	}
+		Name:    name,
+		Sign:    sign,
+		Data:    b,
+	}, nil
 }
 
-// DataEncoder 数据量大，使用 json 序列化+gzip压缩
-func DataEncoder(obj interface{}) ([]byte, error) {
+func ObjToByte(obj interface{}) ([]byte, error) {
 	b, err := json.Marshal(obj)
 	if err != nil {
 		return []byte(""), err
 	}
-	return GzipCompress(b), nil
+	return b, nil
 }
 
-// DataDecoder 解码
-func DataDecoder(data []byte, obj interface{}) error {
-	b, err := GzipDecompress(data)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(b, obj)
+func ByteToObj(data []byte, obj interface{}) error {
+	return json.Unmarshal(data, obj)
 }
 
 // GzipCompress gzip压缩
@@ -102,7 +118,7 @@ func GzipCompress(src []byte) []byte {
 	_, err = w.Write(src)
 	err = w.Close()
 	if err != nil {
-		log.Println(err)
+		log.Error(err)
 	}
 	return in.Bytes()
 }
@@ -118,7 +134,88 @@ func GzipDecompress(src []byte) ([]byte, error) {
 	buf := bytes.NewBuffer(bf)
 	_, err = io.Copy(buf, gr)
 	err = gr.Close()
-	return buf.Bytes(), nil
+	return buf.Bytes(), err
 }
 
-// des加密解密
+// ZlibCompress zlib压缩
+func ZlibCompress(src []byte) []byte {
+	buf := new(bytes.Buffer)
+	//根据创建的buffer生成 zlib writer
+	writer := zlib.NewWriter(buf)
+	//写入数据
+	_, err := writer.Write(src)
+	err = writer.Close()
+	if err != nil {
+		log.Error(err)
+	}
+	return buf.Bytes()
+}
+
+// ZlibDecompress zlib解压
+func ZlibDecompress(src []byte) ([]byte, error) {
+	reader := bytes.NewReader(src)
+	gr, err := zlib.NewReader(reader)
+	if err != nil {
+		return []byte(""), err
+	}
+	bf := make([]byte, 0)
+	buf := bytes.NewBuffer(bf)
+	_, err = io.Copy(buf, gr)
+	err = gr.Close()
+	return buf.Bytes(), err
+}
+
+// des ecb 加密解密
+// 占定使用这种加密方法，保障抓包数据不是明文
+
+func pkcs5Padding(ciphertext []byte, blockSize int) []byte {
+	padding := blockSize - len(ciphertext)%blockSize
+	text := bytes.Repeat([]byte{byte(padding)}, padding)
+	return append(ciphertext, text...)
+}
+
+func pkcs5UnPadding(origData []byte) []byte {
+	length := len(origData)
+	unPadding := int(origData[length-1])
+	return origData[:(length - unPadding)]
+}
+
+func desECBEncrypt(data, key []byte) []byte {
+	block, err := des.NewCipher(key)
+	if err != nil {
+		return nil
+	}
+	bs := block.BlockSize()
+	data = pkcs5Padding(data, bs)
+	if len(data)%bs != 0 {
+		return nil
+	}
+	out := make([]byte, len(data))
+	dst := out
+	for len(data) > 0 {
+		block.Encrypt(dst, data[:bs])
+		data = data[bs:]
+		dst = dst[bs:]
+	}
+	return out
+}
+
+func desECBDecrypt(data, key []byte) []byte {
+	block, err := des.NewCipher(key)
+	if err != nil {
+		return nil
+	}
+	bs := block.BlockSize()
+	if len(data)%bs != 0 {
+		return nil
+	}
+	out := make([]byte, len(data))
+	dst := out
+	for len(data) > 0 {
+		block.Decrypt(dst, data[:bs])
+		data = data[bs:]
+		dst = dst[bs:]
+	}
+	out = pkcs5UnPadding(out)
+	return out
+}

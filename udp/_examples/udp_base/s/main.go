@@ -3,7 +3,6 @@ package main
 import (
 	"beacon-tower/udp"
 	"log"
-	"net"
 )
 
 func main() {
@@ -11,8 +10,16 @@ func main() {
 	if e != nil {
 		panic(e)
 	}
-	s.Read(func(client *net.UDPAddr, data []byte) {
-		log.Println("读取到数据：", string(data))
-		s.Write(client, []byte("world."))
-	})
+	s.PutHandleFunc("case1", Case1)
+	s.PutHandleFunc("case2", Case2)
+	s.Run()
+}
+
+func Case1(s *udp.Servers, body []byte) {
+	log.Println("Case1 func --> ", string(body))
+}
+
+func Case2(s *udp.Servers, body []byte) {
+	log.Println("Case2 func --> ", string(body))
+	log.Println("servers name = ", s.GetServersName())
 }

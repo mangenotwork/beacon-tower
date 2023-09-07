@@ -1,24 +1,27 @@
 package udp
 
 import (
-	"fmt"
-	"log"
+	"github.com/mangenotwork/common/log"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Client struct {
 	ServersHost string // serversIP:port
 	Conn        *net.UDPConn
-	Name        string // client的名称
-	ConnectCode string // 连接code 是静态的由server端配发
-	State       int    // 0:未连接   1:连接成功  2:server端丢失
-	Sign        string // 签名
+	name        string // client的名称
+	connectCode string // 连接code 是静态的由server端配发
+	state       int    // 0:未连接   1:连接成功  2:server端丢失
+	sign        string // 签名
+	secretKey   string // 数据传输加密解密秘钥
 }
 
 type ClientConf struct {
+	Name        string
 	ConnectCode string
+	SecretKey   string // 数据传输加密解密秘钥
 }
 
 func NewClient(host string, conf ...ClientConf) *Client {
@@ -27,10 +30,12 @@ func NewClient(host string, conf ...ClientConf) *Client {
 	}
 	if len(conf) >= 1 {
 		if len(conf[0].ConnectCode) > 0 {
-			c.ConnectCode = conf[0].ConnectCode
+			c.connectCode = conf[0].ConnectCode
 		}
 	} else {
+		c.DefaultClientName()
 		c.DefaultConnectCode()
+		c.DefaultSecretKey()
 	}
 	sHost := strings.Split(c.ServersHost, ":")
 	sip := net.ParseIP(sHost[0])
@@ -39,7 +44,7 @@ func NewClient(host string, conf ...ClientConf) *Client {
 	dstAddr := &net.UDPAddr{IP: sip, Port: sport}
 	c.Conn, err = net.DialUDP("udp", srcAddr, dstAddr)
 	if err != nil {
-		fmt.Println(err)
+		log.Error(err)
 	}
 
 	// 启动一个携程用于与servers进行交互,外部不可操作
@@ -48,36 +53,42 @@ func NewClient(host string, conf ...ClientConf) *Client {
 		for {
 			n, remoteAddr, err := c.Conn.ReadFromUDP(data)
 			if err != nil {
-				fmt.Printf("error during read: %s", err.Error())
+				log.InfoF("error during read: %s", err.Error())
+				c.state = 0 // 连接有异常更新连接状态
+				continue
 			}
-			fmt.Printf("<%s> %s\n", remoteAddr, data[:n])
-			fmt.Println("解包....size = ", n)
-			packet := PacketDecrypt(data, n)
+			log.InfoF("<%s> %s\n", remoteAddr, data[:n])
+			log.Info("解包....size = ", n)
+			packet, err := PacketDecrypt(c.secretKey, data, n)
+			if err != nil {
+				log.Error("错误的包 err:", err)
+				continue
+			}
 			switch packet.Command {
 			case CommandReply:
 				reply := &Reply{}
-				err := DataDecoder(packet.Data, &reply)
+				err := ByteToObj(packet.Data, &reply)
 				if err != nil {
-					log.Println("返回的包解析失败， err = ", err)
+					log.Error("返回的包解析失败， err = ", err)
 				}
-				log.Println(reply.Type, string(reply.Data))
+				log.Info(reply.Type, string(reply.Data))
 
 				switch CommandCode(reply.Type) {
 				case CommandConnect:
-					log.Println("收到连接的反馈与下发的签名: ", string(reply.Data))
+					log.Info("收到连接的反馈与下发的签名: ", string(reply.Data))
 					// 存储签名
-					c.Sign = string(reply.Data)
-					c.State = 1
+					c.sign = string(reply.Data)
+					c.state = 1
 				case CommandPut:
-					if c.Sign != packet.Sign {
-						log.Println("未知主机认证!")
+					if c.sign != packet.Sign {
+						log.Info("未知主机认证!")
 						return
 					}
 					ackState, err := bytesToInt(reply.Data)
 					if err != nil {
-						log.Println("解析ackState失败, err = ", err)
+						log.Error("解析ackState失败, err = ", err)
 					}
-					log.Println("ackState = ", ackState)
+					log.Info("ackState = ", ackState)
 
 					if ackState == 0 {
 						// 发送成功
@@ -102,7 +113,7 @@ func (c *Client) Close() {
 	}
 	err := c.Conn.Close()
 	if err != nil {
-		fmt.Printf(err.Error())
+		log.Error(err.Error())
 	}
 }
 
@@ -112,11 +123,11 @@ func (c *Client) Read(f func(data []byte)) {
 		for {
 			n, remoteAddr, err := c.Conn.ReadFromUDP(data)
 			if err != nil {
-				fmt.Printf("error during read: %s", err.Error())
+				log.ErrorF("error during read: %s", err.Error())
 			}
-			fmt.Printf("<%s> %s\n", remoteAddr, data[:n])
-			fmt.Println("解包....")
-			PacketDecrypt(data, n)
+			log.InfoF("<%s> %s\n", remoteAddr, data[:n])
+			log.Info("解包....")
+			PacketDecrypt(c.secretKey, data, n)
 			f(data)
 		}
 	}()
@@ -125,35 +136,52 @@ func (c *Client) Read(f func(data []byte)) {
 func (c *Client) Write(data []byte) {
 	_, err := c.Conn.Write(data)
 	if err != nil {
-		fmt.Printf("error write: %s", err.Error())
+		log.ErrorF("error write: %s", err.Error())
 	}
-	fmt.Printf("<%s>\n", c.Conn.RemoteAddr())
+	log.InfoF("<%s>\n", c.Conn.RemoteAddr())
 }
 
-func (c *Client) Put(data []byte) {
-	if c.State != 1 {
-		log.Println("还未认证连接")
-		return
+func (c *Client) Put(funcLabel string, data []byte) {
+R:
+	if c.state != 1 {
+		log.Info("还未认证连接")
+		c.ConnectServers()
+		time.Sleep(100 * time.Millisecond)
+		goto R
 	}
-	data, err := PacketEncoder(CommandPut, "client", c.Sign, data)
+	putData := PutData{
+		Label: funcLabel,
+		Body:  data,
+	}
+	b, err := ObjToByte(putData)
 	if err != nil {
-		fmt.Println(err)
+		log.Error("ObjToByte err = ", err)
 	}
-	log.Println(len(data), string(data))
-	c.Write(data)
+	packet, err := PacketEncoder(CommandPut, c.name, c.sign, c.secretKey, b)
+	if err != nil {
+		log.Error(err)
+	}
+	c.Write(packet)
 }
 
 // ConnectServers 请求连接服务器，获取签名
 // 内容是发送 Connect code
 func (c *Client) ConnectServers() {
-	data, err := PacketEncoder(CommandConnect, c.Name, c.Sign, []byte(c.ConnectCode))
+	data, err := PacketEncoder(CommandConnect, c.name, c.sign, c.secretKey, []byte(c.connectCode))
 	if err != nil {
-		fmt.Println(err)
+		log.Error(err)
 	}
 	c.Write(data)
+}
 
+func (c *Client) DefaultClientName() {
+	c.name = DefaultClientName
 }
 
 func (c *Client) DefaultConnectCode() {
-	c.ConnectCode = DefaultConnectCode
+	c.connectCode = DefaultConnectCode
+}
+
+func (c *Client) DefaultSecretKey() {
+	c.secretKey = DefaultSecretKey
 }
