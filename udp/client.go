@@ -1,6 +1,7 @@
 package udp
 
 import (
+	"fmt"
 	"github.com/mangenotwork/common/log"
 	"net"
 	"os"
@@ -19,7 +20,7 @@ type Client struct {
 	state       int    // 0:未连接   1:连接成功  2:server端丢失
 	sign        string // 签名
 	secretKey   string // 数据传输加密解密秘钥
-
+	GetHandle   ClientGetFunc
 }
 
 type ClientConf struct {
@@ -32,6 +33,7 @@ func NewClient(host string, conf ...ClientConf) *Client {
 	c := &Client{
 		ServersHost: host,
 		state:       0,
+		GetHandle:   make(ClientGetFunc),
 	}
 	if len(conf) >= 1 {
 		if len(conf[0].ConnectCode) > 0 {
@@ -69,46 +71,70 @@ func NewClient(host string, conf ...ClientConf) *Client {
 				log.Error("错误的包 err:", err)
 				continue
 			}
-			switch packet.Command {
-			case CommandReply:
-				reply := &Reply{}
-				err := ByteToObj(packet.Data, &reply)
-				if err != nil {
-					log.Error("返回的包解析失败， err = ", err)
-				}
-				log.Info(reply.Type, string(reply.Data))
+			go func() {
+				switch packet.Command {
 
-				switch CommandCode(reply.Type) {
-				case CommandConnect: // 连接包与心跳包的反馈会触发
-					log.Info("收到连接的反馈与下发的签名: ", string(reply.Data))
-					// 存储签名
-					c.sign = string(reply.Data)
-					c.state = 1
-					// 将积压的数据进行发送
-					c.SendBacklog()
-				case CommandPut:
+				case CommandNotice: // TODO 来自server端的通知消息
+					log.Info("接收通知 Notice...")
+
+				case CommandGet: // TODO 来自server端的get请求
+					log.Info("接收Get请求...")
 					if c.sign != packet.Sign {
 						log.Info("未知主机认证!")
 						return
 					}
-					res, err := bytesToInt64(reply.Data)
+
+				case CommandReply:
+					reply := &Reply{}
+					err := ByteToObj(packet.Data, &reply)
 					if err != nil {
-						log.Error("解析ackState失败, err = ", err)
+						log.Error("返回的包解析失败， err = ", err)
+					}
+					log.Info("收到包 id: ", reply.Type)
+
+					switch CommandCode(reply.Type) {
+					case CommandConnect: // 连接包与心跳包的反馈会触发
+						log.Info("收到连接的反馈与下发的签名: ", string(reply.Data))
+						// 存储签名
+						c.sign = string(reply.Data)
+						c.state = 1
+						// 将积压的数据进行发送
+						c.SendBacklog()
+					case CommandPut:
+						if c.sign != packet.Sign {
+							log.Info("未知主机认证!")
+							return
+						}
+						if reply.StateCode != 0 {
+							// 签名错误
+							log.Error("签名错误")
+							c.ConnectServers()
+							break
+						}
+						// 服务端以确认收到删除对应的数据
+						log.Info("putId = ", reply.CtxId)
+						backlogDel(reply.CtxId)
+
+					case CommandGet:
+						if c.sign != packet.Sign {
+							log.Info("未知主机认证!")
+							return
+						}
+						log.Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
+						getData := &GetData{}
+						err := ByteToObj(reply.Data, &getData)
+						if err != nil {
+							log.Error("解析put err :", err)
+						}
+						log.Info("getData.Label -> ", getData.Label)
+						getF, _ := GetDataMap.Load(getData.Id)
+						getF.(*GetData).Response = getData.Response
+						getF.(*GetData).ctxChan <- true
 					}
 
-					if res == 1 {
-						// 签名错误
-						log.Error("签名错误")
-						c.ConnectServers()
-						break
-					}
-
-					// 服务端以确认收到删除对应的数据
-					log.Info("putId = ", reply.PutId)
-					backlogDel(reply.PutId)
 				}
+			}()
 
-			}
 		}
 	}()
 
@@ -167,8 +193,9 @@ func (c *Client) Write(data []byte) {
 	log.InfoF("<%s>\n", c.Conn.RemoteAddr())
 }
 
+// Put client put
+// 向服务端发送数据，如果服务端未在线数据会被积压，等服务器恢复后积压数据会一并发送
 func (c *Client) Put(funcLabel string, data []byte) {
-
 	putData := PutData{
 		Label: funcLabel,
 		Id:    id(),
@@ -190,6 +217,50 @@ func (c *Client) Put(funcLabel string, data []byte) {
 		log.Error(err)
 	}
 	c.Write(packet)
+}
+
+// 向服务端获取数据，指定一个超时时间，未应答就超时
+func (c *Client) get(timeOut int, funcLabel string, param []byte) ([]byte, error) {
+	getData := &GetData{
+		Label:    funcLabel,
+		Id:       id(),
+		Param:    param,
+		ctxChan:  make(chan bool),
+		Response: make([]byte, 0),
+	}
+	GetDataMap.Store(getData.Id, getData)
+	b, err := ObjToByte(getData)
+	if err != nil {
+		log.Error("ObjToByte err = ", err)
+	}
+	packet, err := PacketEncoder(CommandGet, c.name, c.sign, c.secretKey, b)
+	if err != nil {
+		log.Error(err)
+	}
+	c.Write(packet)
+	select {
+	case <-getData.ctxChan:
+		log.Info("收到get返回的数据...")
+		res := getData.Response
+		GetDataMap.Delete(getData.Id)
+		return res, nil
+	case <-time.After(time.Millisecond * time.Duration(timeOut)):
+		GetDataMap.Delete(getData.Id)
+		return nil, fmt.Errorf("请求超时...")
+	}
+
+}
+
+func (c *Client) Get(funcLabel string, param []byte) ([]byte, error) {
+	return c.get(1000, funcLabel, param)
+}
+
+func (c *Client) GetTimeOut(funcLabel string, param []byte, timeOut int) ([]byte, error) {
+	return c.get(timeOut, funcLabel, param)
+}
+
+func (c *Client) GetHandleFunc(label string, f func(c *Client, param []byte) (int, []byte)) {
+	c.GetHandle[label] = f
 }
 
 // ConnectServers 请求连接服务器，获取签名
@@ -217,7 +288,7 @@ func (c *Client) DefaultSecretKey() {
 // 时间轮，持续制定时间发送心跳包
 func (c *Client) timeWheel() {
 	go func() {
-		tTime := time.Duration(5) // 时间轮5秒
+		tTime := time.Duration(1) // 时间轮5秒
 		for {
 			// 5s维护一个心跳，s端收到心跳会返回新的签名
 			timer := time.NewTimer(tTime * time.Second)

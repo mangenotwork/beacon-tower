@@ -9,7 +9,7 @@ const (
 	CommandPut       CommandCode = 0x1 // 发送消息
 	CommandReply     CommandCode = 0x2 // 收到回应， ackType: put, heartbeat, sign
 	CommandHeartbeat CommandCode = 0x3 // 发送心跳
-	CommandSign      CommandCode = 0x4 // 下发签名
+	CommandNotice    CommandCode = 0x4 // 下发签名
 	CommandGet       CommandCode = 0x5 // 获取消息
 )
 

@@ -18,11 +18,12 @@ func main() {
 	}
 	s.PutHandleFunc("case1", Case1)
 	s.PutHandleFunc("case2", Case2)
-
+	s.GetHandleFunc("case3", Case3)
 	go func() {
 		for {
 			time.Sleep(2 * time.Second)
-			udp.HeartbeatTableShow()
+			//udp.HeartbeatTableShow()
+
 		}
 	}()
 
@@ -47,4 +48,9 @@ func Case2(s *udp.Servers, body []byte) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func Case3(s *udp.Servers, param []byte) (int, []byte) {
+	log.Println("获取到的请求参数  param = ", string(param))
+	return 0, []byte("服务器名称 servers.")
 }

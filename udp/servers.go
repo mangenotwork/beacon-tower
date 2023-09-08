@@ -16,6 +16,7 @@ type Servers struct {
 	connectCode string                 // 连接code 是静态的由server端配发
 	secretKey   string                 // 数据传输加密解密秘钥
 	PutHandle   ServersPutFunc
+	GetHandle   ServersGetFunc
 }
 
 type ServersConf struct {
@@ -31,6 +32,7 @@ func NewServers(addr string, port int, conf ...ServersConf) (*Servers, error) {
 		Port:      port,
 		CMap:      map[string]*ClientAddr{},
 		PutHandle: make(ServersPutFunc),
+		GetHandle: make(ServersGetFunc),
 	}
 	if len(conf) >= 1 {
 		if len(conf[0].Name) > 0 && len(conf[0].Name) <= 7 {
@@ -108,15 +110,65 @@ func (s *Servers) Run() {
 					s.ReplyPut(remoteAddr, putData.Id, 0)
 				}
 
-			//case CommandHeartbeat: // 自行维护外部不可改变
-			//	log.Info("接收到心跳包...")
-			//	if string(packet.Data) != s.connectCode {
-			//		log.Info("未知客户端，连接code不正确...")
-			//		return
-			//	}
-			//	HeartbeatTable.Store(remoteAddr.String(), time.Now().Unix())
-			//	// 下发签名
-			//	s.ReplyConnect(remoteAddr)
+			case CommandGet:
+				log.Info("接收Get请求...")
+				// 验证签名
+				if !SignCheck(remoteAddr.String(), packet.Sign) {
+					log.Info("签名失败...")
+					s.ReplyPut(remoteAddr, 0, 1)
+				} else {
+					log.Info("签名成功...")
+					//log.Info("收到数据: ", string(packet.Data))
+
+					getData := &GetData{}
+					err := ByteToObj(packet.Data, &getData)
+					if err != nil {
+						log.Error("解析put err :", err)
+					}
+					log.Info("putData.Label -> ", getData.Label)
+					if fn, ok := s.GetHandle[getData.Label]; ok {
+						code, rse := fn(s, getData.Param)
+						getData.Response = rse
+						gb, err := ObjToByte(getData)
+						if err != nil {
+							log.Error("对象转字节错误...")
+						}
+						s.ReplyGet(remoteAddr, getData.Id, code, gb)
+					}
+
+				}
+
+			case CommandReply: // 收到客户端的回复
+				log.Info("client端的回复...")
+				//if !SignCheck(remoteAddr.String(), packet.Sign) {
+				//	log.Info("签名失败...")
+				//	s.ReplyPut(remoteAddr, 0, 1)
+				//} else {
+				//
+				//reply := &Reply{}
+				//err := ByteToObj(packet.Data, &reply)
+				//if err != nil {
+				//	log.Error("返回的包解析失败， err = ", err)
+				//}
+				//log.Info("收到包 id: ", reply.Type)
+				//switch CommandCode(reply.Type) {
+				//case CommandGet:
+				//	if s.sign != packet.Sign {
+				//		log.Info("未知主机认证!")
+				//		return
+				//	}
+				//	log.Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
+				//	getData := &GetData{}
+				//	err := ByteToObj(reply.Data, &getData)
+				//	if err != nil {
+				//		log.Error("解析put err :", err)
+				//	}
+				//	log.Info("getData.Label -> ", getData.Label)
+				//	getF, _ := GetDataMap.Load(getData.Id)
+				//	getF.(*GetData).Response = getData.Response
+				//	getF.(*GetData).ctxChan <- true
+				//
+				//}
 
 			default:
 				// 未知包丢弃
@@ -135,27 +187,27 @@ func (s *Servers) Write(client *net.UDPAddr, data []byte) {
 	}
 }
 
-func (s *Servers) Put(client *net.UDPAddr, data []byte) {
-	sign := SignGet(client.String())
-	data, err := PacketEncoder(CommandPut, s.name, sign, s.secretKey, data)
-	if err != nil {
-		log.Error(err)
-	}
-	s.Write(client, data)
-}
+// Get  TODO... 向指定 cliet获取数据，  针对name,ip, 获取指定name或ip Client的数据
+func (s *Servers) Get() {}
+
+// Notice  TODO...  通知方法:针对 name,对Client发送通知
+func (s *Servers) Notice() {}
 
 type Reply struct {
-	Type  int
-	PutId int64
-	Data  []byte
+	Type      int
+	CtxId     int64 // 数据包上下文的交互id
+	Data      []byte
+	StateCode int // 状态码  0:成功  1:认证失败  2:自定义错误
 }
 
 func (s *Servers) ReplyConnect(client *net.UDPAddr) {
 	sign := createSign()
 	log.Info("生成签名 : ", sign)
 	reply := &Reply{
-		Type: int(CommandConnect),
-		Data: []byte(sign),
+		Type:      int(CommandConnect),
+		Data:      []byte(sign),
+		CtxId:     0,
+		StateCode: 0,
 	}
 	b, e := ObjToByte(reply)
 	if e != nil {
@@ -174,9 +226,30 @@ func (s *Servers) ReplyConnect(client *net.UDPAddr) {
 func (s *Servers) ReplyPut(client *net.UDPAddr, id, state int64) {
 	stateB, _ := int64ToBytes(state)
 	reply := &Reply{
-		Type:  int(CommandPut),
-		PutId: id,
-		Data:  stateB,
+		Type:      int(CommandPut),
+		CtxId:     id,
+		Data:      stateB,
+		StateCode: int(state),
+	}
+	b, e := ObjToByte(reply)
+	if e != nil {
+		log.Error("打包数据失败, e= ", e)
+	}
+	sign := SignGet(client.String())
+	data, err := PacketEncoder(CommandReply, s.name, sign, s.secretKey, b)
+	if err != nil {
+		log.Error(err)
+	}
+	s.Write(client, data)
+}
+
+// ReplyGet 返回put  state:0x0 成功   state:0x1 签名失败  state:2 业务层面的失败
+func (s *Servers) ReplyGet(client *net.UDPAddr, id int64, state int, data []byte) {
+	reply := &Reply{
+		Type:      int(CommandGet),
+		CtxId:     id,
+		Data:      data,
+		StateCode: state,
 	}
 	b, e := ObjToByte(reply)
 	if e != nil {
@@ -209,6 +282,10 @@ func (s *Servers) SetConnectCode(code string) {
 
 func (s *Servers) PutHandleFunc(label string, f func(s *Servers, body []byte)) {
 	s.PutHandle[label] = f
+}
+
+func (s *Servers) GetHandleFunc(label string, f func(s *Servers, param []byte) (int, []byte)) {
+	s.GetHandle[label] = f
 }
 
 func (s *Servers) GetServersName() string {

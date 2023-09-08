@@ -10,7 +10,7 @@ import (
 func main() {
 	client := udp.NewClient("127.0.0.1:12345")
 	client.ConnectServers() // 连接服务器
-
+	client.GetHandleFunc("c_get_test", CGetTest)
 	//udp.TBacklog()
 	//
 	//go func() {
@@ -27,10 +27,28 @@ func main() {
 		//client.Put("case1", []byte(txt))
 		//time.Sleep(3 * time.Second)
 		time.Sleep(2 * time.Second)
-		client.Put("case2", []byte(fmt.Sprintf("hello : %d", n)))
-		log.Info("n = ", n)
+		//client.Put("case2", []byte(fmt.Sprintf("hello : %d", n)))
+		//log.Info("n = ", n)
+
+		rse, err := client.Get("case3", []byte("test"))
+		fmt.Println("\n\n___________________________get test__________________________")
+		if err != nil {
+			log.Error(err)
+		} else {
+			log.Info("get 请求返回 = ", string(rse))
+		}
+		fmt.Println("____________________________________________________________\n\n\n")
 	}
 
+}
+
+func CaseGet(c *udp.Client, response []byte) {
+	log.Info("get 到的数据: ", string(response))
+}
+
+func CGetTest(c *udp.Client, param []byte) (int, []byte) {
+	log.Info("获取到的请求参数  param = ", string(param))
+	return 0, []byte("客户端名称 client.")
 }
 
 var txt = `hello; 你好这是一个测试数据,哈哈哈哈哈哈，你好你好世界,aaaaaaa!!!!!

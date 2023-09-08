@@ -9,8 +9,11 @@
 - s端确认c端是否在线 ok
 - 数据积压机制 ok
 - 数据重传机制 ok
-- 积压数据持久化 
-- put场景设计
-- get场景设计
-- 测试并考虑多场景
-- 测试并考虑分布式场景
+- 积压数据持久化 ok
+- client put场景设计 ok
+- client get场景设计 ok
+- servers notice场景设计 
+- servers get场景设计 
+- 测试并考虑多场景 
+- 测试并考虑分布式场景 
+- 
