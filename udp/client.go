@@ -3,9 +3,11 @@ package udp
 import (
 	"github.com/mangenotwork/common/log"
 	"net"
+	"os"
+	"os/signal"
 	"strconv"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
 )
 
@@ -83,7 +85,7 @@ func NewClient(host string, conf ...ClientConf) *Client {
 					c.sign = string(reply.Data)
 					c.state = 1
 					// 将积压的数据进行发送
-					c.SendJiYa()
+					c.SendBacklog()
 				case CommandPut:
 					if c.sign != packet.Sign {
 						log.Info("未知主机认证!")
@@ -103,7 +105,7 @@ func NewClient(host string, conf ...ClientConf) *Client {
 
 					// 服务端以确认收到删除对应的数据
 					log.Info("putId = ", reply.PutId)
-					JiYa.Delete(reply.PutId)
+					backlogDel(reply.PutId)
 				}
 
 			}
@@ -112,6 +114,21 @@ func NewClient(host string, conf ...ClientConf) *Client {
 
 	// 时间轮,心跳维护，动态刷新签名
 	c.timeWheel()
+
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL, syscall.SIGHUP, syscall.SIGQUIT)
+	go func() {
+		select {
+		case s := <-ch:
+			log.Info("通知退出....")
+			toUdb() // 将积压的数据持久化
+			if i, ok := s.(syscall.Signal); ok {
+				os.Exit(int(i))
+			} else {
+				os.Exit(0)
+			}
+		}
+	}()
 
 	return c
 }
@@ -158,9 +175,7 @@ func (c *Client) Put(funcLabel string, data []byte) {
 		Body:  data,
 	}
 	// 数据被积压，占时保存
-	log.Info("putData.Id = ", putData.Id)
-	JiYa.Store(putData.Id, putData)
-
+	backlogAdd(putData.Id, putData)
 	// 未与servers端确认连接，不发送数据
 	if c.state != 1 {
 		log.Info("还未认证连接")
@@ -221,12 +236,9 @@ func (c *Client) timeWheel() {
 	}()
 }
 
-// JiYa 积压的数据，所有发送的数据都会到这里，只有服务端确认的数据才会被删除
-var JiYa sync.Map
-
-// SendJiYa 发送积压的数据，
-func (c *Client) SendJiYa() {
-	JiYa.Range(func(key, value any) bool {
+// SendBacklog 发送积压的数据，
+func (c *Client) SendBacklog() {
+	backlog.Range(func(key, value any) bool {
 		log.Info("重发 key = ", key)
 		b, err := ObjToByte(value.(PutData))
 		if err != nil {
@@ -239,5 +251,6 @@ func (c *Client) SendJiYa() {
 		c.Write(packet)
 		return true
 	})
-
+	// 如果存在持久化积压数据则进行发送
+	BacklogLoad()
 }

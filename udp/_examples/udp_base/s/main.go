@@ -27,7 +27,6 @@ func main() {
 	}()
 
 	s.Run()
-
 }
 
 func Case1(s *udp.Servers, body []byte) {

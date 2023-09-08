@@ -32,7 +32,14 @@ beacon-tower udp 其他特性?
 - 数据压缩    接入 gzip  （数据限定大小， 大于则进行拆分）
 
 
-TODO： 画设计图
+限制: 
+1. 在双端通讯最佳场景中应指定servers 与 client 昵称
+2. 数据包应小而独立，数据大应在业务层进行拆分
+
+Servers : 支持 notice(通知方法:针对 name,对Client发送通知 ), GET 方法(针对name,ip, 获取指定name或ip Client的数据)
+
+Client : 支持 PUT(向servers发送数据), GET(向servers获取数据) 方法
+
 
 
 #### 基于TCP的网络传输协议
