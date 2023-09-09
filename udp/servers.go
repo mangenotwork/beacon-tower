@@ -1,6 +1,7 @@
 package udp
 
 import (
+	"fmt"
 	"github.com/mangenotwork/common/log"
 	"net"
 	"sync"
@@ -11,10 +12,10 @@ type Servers struct {
 	Addr        string
 	Port        int
 	Conn        *net.UDPConn
-	name        string                 // servers端的名称
-	CMap        map[string]*ClientAddr // 存放客户端连接信息
-	connectCode string                 // 连接code 是静态的由server端配发
-	secretKey   string                 // 数据传输加密解密秘钥
+	name        string                         // servers端的名称
+	CMap        map[string][]*ClientConnectObj // 存放客户端连接信息
+	connectCode string                         // 连接code 是静态的由server端配发
+	secretKey   string                         // 数据传输加密解密秘钥
 	PutHandle   ServersPutFunc
 	GetHandle   ServersGetFunc
 }
@@ -30,7 +31,7 @@ func NewServers(addr string, port int, conf ...ServersConf) (*Servers, error) {
 	s := &Servers{
 		Addr:      addr,
 		Port:      port,
-		CMap:      map[string]*ClientAddr{},
+		CMap:      make(map[string][]*ClientConnectObj),
 		PutHandle: make(ServersPutFunc),
 		GetHandle: make(ServersGetFunc),
 	}
@@ -60,6 +61,10 @@ func NewServers(addr string, port int, conf ...ServersConf) (*Servers, error) {
 }
 
 func (s *Servers) Run() {
+
+	// 启动一个时间轮维护c端的连接
+	s.timeWheel()
+
 	// 读取数据s
 	data := make([]byte, 1024)
 	for {
@@ -82,8 +87,10 @@ func (s *Servers) Run() {
 					log.Info("未知客户端，连接code不正确...")
 					return
 				}
-				// 记录c端心跳表，用于记录c端是否离线
-				HeartbeatTable.Store(remoteAddr.IP.String(), time.Now().Unix())
+
+				// 存储c端的连接
+				s.ClientJoin(packet.Name, remoteAddr.IP.String(), remoteAddr)
+
 				// 下发签名
 				s.ReplyConnect(remoteAddr)
 
@@ -138,6 +145,17 @@ func (s *Servers) Run() {
 
 				}
 
+			case CommandNotice: // 收到客户端通知的响应
+				log.Info("收到客户端通知的响应...")
+				notice := &NoticeData{}
+				err := ByteToObj(packet.Data, &notice)
+				if err != nil {
+					log.Error("返回的包解析失败， err = ", err)
+				}
+				if v, ok := NoticeDataMap.Load(notice.Id); ok {
+					v.(*NoticeData).ctxChan <- true
+				}
+
 			case CommandReply: // 收到客户端的回复
 				log.Info("client端的回复...")
 				//if !SignCheck(remoteAddr.String(), packet.Sign) {
@@ -190,8 +208,90 @@ func (s *Servers) Write(client *net.UDPAddr, data []byte) {
 // Get  TODO... 向指定 cliet获取数据，  针对name,ip, 获取指定name或ip Client的数据
 func (s *Servers) Get() {}
 
-// Notice  TODO...  通知方法:针对 name,对Client发送通知
-func (s *Servers) Notice() {}
+// Notice  通知方法:针对 name,对Client发送通知
+// 特点: 1. 重试次数 2. 指定时间内重试
+func (s *Servers) Notice(name, label string, data []byte) (string, error) {
+	log.Info("发送通知消息......")
+	if name == "" {
+		name = formatName(DefaultClientName)
+	}
+	// 直接下发消息，等待c端应答
+	client, ok := s.GetClientConn(name)
+	log.Info("client = ", name, client, ok)
+	if !ok {
+		return "未找到客户端", fmt.Errorf("未找到客户端...")
+	}
+	// 组建通知包
+	packetMap := make(map[*net.UDPAddr]*NoticeData, 0)
+	for _, c := range client {
+		noticeData := &NoticeData{
+			Label:   label,
+			Id:      id(),
+			Data:    data,
+			ctxChan: make(chan bool),
+		}
+		NoticeDataMap.Store(noticeData.Id, noticeData)
+		packetMap[c.Addr] = noticeData
+		go func() {
+			for {
+				timer := time.NewTimer(10 * time.Second)
+				select {
+				case <-noticeData.ctxChan:
+					log.Info("收到client通知反馈... id = ", noticeData.Id)
+					NoticeDataMap.Delete(noticeData.Id)
+					return
+				case <-timer.C: // 超过10秒，表示已经大于最大重试的时间，释放内存
+					NoticeDataMap.Delete(noticeData.Id)
+					log.Info("超过10秒，表示已经大于最大重试的时间，释放内存")
+					return
+				}
+			}
+
+		}()
+	}
+	if s.noticeSend(packetMap) {
+		return "通知下发完成", nil
+	}
+	retry := 1    // 重试次数
+	retryMax := 3 // 最大重试3次
+	for {
+		if retry > retryMax {
+			return "重试次数完，还有客户端未收到通知", fmt.Errorf("重试次数完，还有客户端未收到通知")
+		}
+		timer := time.NewTimer(3 * time.Second) // 3秒重试一次
+		select {
+		case <-timer.C:
+			// 检查通知
+			if s.noticeSend(packetMap) {
+				return "通知下发完成", nil
+			}
+			retry++
+		}
+	}
+
+}
+
+func (s *Servers) noticeSend(packetMap map[*net.UDPAddr]*NoticeData) bool {
+	finish := true
+	for cConn, v := range packetMap {
+		_, has := NoticeDataMap.Load(v.Id)
+		log.Info("发送消息id = ", v.Id, "  -> has = ", has)
+		if has {
+			finish = false
+			b, err := ObjToByte(v)
+			if err != nil {
+				log.Error("ObjToByte err = ", err)
+			}
+			sign := SignGet(cConn.String())
+			packet, err := PacketEncoder(CommandNotice, s.name, sign, s.secretKey, b)
+			if err != nil {
+				log.Error(err)
+			}
+			s.Write(cConn, packet)
+		}
+	}
+	return finish
+}
 
 type Reply struct {
 	Type      int
@@ -292,13 +392,90 @@ func (s *Servers) GetServersName() string {
 	return s.name
 }
 
-type ClientAddr struct {
-	Connect []*ClientConnectObj
+func (s *Servers) ClientJoin(name, ip string, addr *net.UDPAddr) {
+	client := &ClientConnectObj{
+		IP:   ip,
+		Addr: addr,
+		Last: time.Now().Unix(),
+	}
+	isHas := false
+	if v, ok := s.CMap[name]; ok {
+		for _, c := range v {
+			if c.Addr.String() == addr.String() {
+				isHas = true
+				c.Addr = addr
+				c.Last = client.Last
+				break
+			}
+		}
+	}
+	if isHas {
+		return
+	}
+	s.CMap[name] = append(s.CMap[name], client)
+	return
+}
+
+func (s *Servers) ClientDiscard(name, ip string) {
+	log.Info("删除离线的c")
+	if v, ok := s.CMap[name]; ok {
+		for i, c := range v {
+			log.Info(i, c.IP, ip)
+			if c.IP == ip {
+				v = append(v[:i], v[i+1:]...)
+			}
+		}
+		s.CMap[name] = v
+	}
+}
+
+func (s *Servers) GetClientConn(name string) ([]*ClientConnectObj, bool) {
+	if v, ok := s.CMap[name]; ok {
+		return v, true
+	}
+	return nil, false
+}
+
+func (s *Servers) GetClientConnFromIP(name, ip string) (*net.UDPAddr, bool) {
+	if list, ok := s.GetClientConn(name); ok {
+		for _, c := range list {
+			if c.IP == ip {
+				return c.Addr, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func (s *Servers) timeWheel() {
+	go func() {
+		tTime := time.Duration(2)
+		for {
+			// 6s检查一次连接
+			timer := time.NewTimer(tTime * time.Second)
+			select {
+			case <-timer.C:
+				//log.Info("时间轮检查c端的连接...")
+				t := time.Now().Unix()
+				for k, v := range s.CMap {
+					for _, c := range v {
+						if t-c.Last > 6 { // 这个时间要大于5秒，因为来自c端的心跳就是5秒
+							//log.InfoF("离线服务器名称:%s IP地址:%s  当前t=%d last=%d", k, c.IP, t, c.Last)
+							s.ClientDiscard(k, c.IP)
+						} else {
+							//log.InfoF("在线服务器名称:%s IP地址:%s  当前t=%d last=%d", k, c.IP, t, c.Last)
+						}
+					}
+				}
+			}
+		}
+	}()
 }
 
 type ClientConnectObj struct {
 	IP   string
 	Addr *net.UDPAddr
+	Last int64 // 最后一次连接的时间
 }
 
 // TODO ... 要定下来确定ip下的节点离线，还是name下的任意节点离线?

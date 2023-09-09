@@ -2,15 +2,15 @@ package main
 
 import (
 	"beacon-tower/udp"
-	"fmt"
 	"github.com/mangenotwork/common/log"
-	"time"
 )
 
 func main() {
 	client := udp.NewClient("127.0.0.1:12345")
 	client.ConnectServers() // 连接服务器
 	client.GetHandleFunc("c_get_test", CGetTest)
+	client.NoticeHandleFunc("testNotice", CNoticeTest)
+	client.Run()
 	//udp.TBacklog()
 	//
 	//go func() {
@@ -20,25 +20,25 @@ func main() {
 	//	}
 	//}()
 
-	n := 0
-	for {
-		n++
-		//time.Sleep(1 * time.Second)
-		//client.Put("case1", []byte(txt))
-		//time.Sleep(3 * time.Second)
-		time.Sleep(2 * time.Second)
-		//client.Put("case2", []byte(fmt.Sprintf("hello : %d", n)))
-		//log.Info("n = ", n)
-
-		rse, err := client.Get("case3", []byte("test"))
-		fmt.Println("\n\n___________________________get test__________________________")
-		if err != nil {
-			log.Error(err)
-		} else {
-			log.Info("get 请求返回 = ", string(rse))
-		}
-		fmt.Println("____________________________________________________________\n\n\n")
-	}
+	//n := 0
+	//for {
+	//	n++
+	//	//time.Sleep(1 * time.Second)
+	//	//client.Put("case1", []byte(txt))
+	//	//time.Sleep(3 * time.Second)
+	//	time.Sleep(2 * time.Second)
+	//	//client.Put("case2", []byte(fmt.Sprintf("hello : %d", n)))
+	//	//log.Info("n = ", n)
+	//
+	//	rse, err := client.Get("case3", []byte("test"))
+	//	fmt.Println("\n\n___________________________get test__________________________")
+	//	if err != nil {
+	//		log.Error(err)
+	//	} else {
+	//		log.Info("get 请求返回 = ", string(rse))
+	//	}
+	//	fmt.Println("____________________________________________________________\n\n\n")
+	//}
 
 }
 
@@ -49,6 +49,11 @@ func CaseGet(c *udp.Client, response []byte) {
 func CGetTest(c *udp.Client, param []byte) (int, []byte) {
 	log.Info("获取到的请求参数  param = ", string(param))
 	return 0, []byte("客户端名称 client.")
+}
+
+func CNoticeTest(c *udp.Client, data []byte) {
+	log.Info("收到来自服务器的通知，开始执行......")
+	log.Info("data = ", string(data))
 }
 
 var txt = `hello; 你好这是一个测试数据,哈哈哈哈哈哈，你好你好世界,aaaaaaa!!!!!

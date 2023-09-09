@@ -12,7 +12,7 @@
 - 积压数据持久化 ok
 - client put场景设计 ok
 - client get场景设计 ok
-- servers notice场景设计 
+- servers notice场景设计 ok
 - servers get场景设计 
 - 测试并考虑多场景 
 - 测试并考虑分布式场景 

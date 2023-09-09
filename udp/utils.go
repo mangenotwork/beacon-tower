@@ -31,3 +31,14 @@ func bytesToInt64(bys []byte) (int64, error) {
 func id() int64 {
 	return utils.ID()
 }
+
+func formatName(str string) string {
+	ln := len(str)
+	if ln > 0 && ln <= 7 {
+		// 补齐位
+		for i := 0; i < 7-ln; i++ {
+			str += " "
+		}
+	}
+	return str
+}

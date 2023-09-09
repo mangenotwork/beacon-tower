@@ -9,7 +9,17 @@ import (
 
 var testFile = "test.txt"
 
-func init() {}
+func init() {
+	//list := []int{1}
+	//log.Println(list)
+	//for i, v := range list {
+	//	if v == 1 {
+	//		log.Println("执行删除")
+	//		list = append(list[:i], list[i+1:]...)
+	//	}
+	//}
+	//log.Println(list)
+}
 
 func main() {
 	s, e := udp.NewServers("0.0.0.0", 12345)
@@ -21,9 +31,10 @@ func main() {
 	s.GetHandleFunc("case3", Case3)
 	go func() {
 		for {
-			time.Sleep(2 * time.Second)
 			//udp.HeartbeatTableShow()
-
+			rse, err := s.Notice("", "testNotice", []byte("testNotice"))
+			log.Println(rse, err)
+			time.Sleep(5 * time.Second)
 		}
 	}()
 

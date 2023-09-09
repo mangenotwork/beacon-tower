@@ -13,14 +13,15 @@ import (
 )
 
 type Client struct {
-	ServersHost string // serversIP:port
-	Conn        *net.UDPConn
-	name        string // client的名称
-	connectCode string // 连接code 是静态的由server端配发
-	state       int    // 0:未连接   1:连接成功  2:server端丢失
-	sign        string // 签名
-	secretKey   string // 数据传输加密解密秘钥
-	GetHandle   ClientGetFunc
+	ServersHost  string // serversIP:port
+	Conn         *net.UDPConn
+	name         string // client的名称
+	connectCode  string // 连接code 是静态的由server端配发
+	state        int    // 0:未连接   1:连接成功  2:server端丢失
+	sign         string // 签名
+	secretKey    string // 数据传输加密解密秘钥
+	GetHandle    ClientGetFunc
+	NoticeHandle ClientNoticeFunc
 }
 
 type ClientConf struct {
@@ -31,9 +32,10 @@ type ClientConf struct {
 
 func NewClient(host string, conf ...ClientConf) *Client {
 	c := &Client{
-		ServersHost: host,
-		state:       0,
-		GetHandle:   make(ClientGetFunc),
+		ServersHost:  host,
+		state:        0,
+		GetHandle:    make(ClientGetFunc),
+		NoticeHandle: make(ClientNoticeFunc),
 	}
 	if len(conf) >= 1 {
 		if len(conf[0].ConnectCode) > 0 {
@@ -54,89 +56,10 @@ func NewClient(host string, conf ...ClientConf) *Client {
 		log.Error(err)
 	}
 
-	// 启动一个携程用于与servers进行交互,外部不可操作
-	go func() {
-		data := make([]byte, 1024)
-		for {
-			n, remoteAddr, err := c.Conn.ReadFromUDP(data)
-			if err != nil {
-				log.InfoF("error during read: %s", err.Error())
-				c.state = 0 // 连接有异常更新连接状态
-				continue
-			}
-			log.InfoF("<%s> %s\n", remoteAddr, data[:n])
-			log.Info("解包....size = ", n)
-			packet, err := PacketDecrypt(c.secretKey, data, n)
-			if err != nil {
-				log.Error("错误的包 err:", err)
-				continue
-			}
-			go func() {
-				switch packet.Command {
+	return c
+}
 
-				case CommandNotice: // TODO 来自server端的通知消息
-					log.Info("接收通知 Notice...")
-
-				case CommandGet: // TODO 来自server端的get请求
-					log.Info("接收Get请求...")
-					if c.sign != packet.Sign {
-						log.Info("未知主机认证!")
-						return
-					}
-
-				case CommandReply:
-					reply := &Reply{}
-					err := ByteToObj(packet.Data, &reply)
-					if err != nil {
-						log.Error("返回的包解析失败， err = ", err)
-					}
-					log.Info("收到包 id: ", reply.Type)
-
-					switch CommandCode(reply.Type) {
-					case CommandConnect: // 连接包与心跳包的反馈会触发
-						log.Info("收到连接的反馈与下发的签名: ", string(reply.Data))
-						// 存储签名
-						c.sign = string(reply.Data)
-						c.state = 1
-						// 将积压的数据进行发送
-						c.SendBacklog()
-					case CommandPut:
-						if c.sign != packet.Sign {
-							log.Info("未知主机认证!")
-							return
-						}
-						if reply.StateCode != 0 {
-							// 签名错误
-							log.Error("签名错误")
-							c.ConnectServers()
-							break
-						}
-						// 服务端以确认收到删除对应的数据
-						log.Info("putId = ", reply.CtxId)
-						backlogDel(reply.CtxId)
-
-					case CommandGet:
-						if c.sign != packet.Sign {
-							log.Info("未知主机认证!")
-							return
-						}
-						log.Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
-						getData := &GetData{}
-						err := ByteToObj(reply.Data, &getData)
-						if err != nil {
-							log.Error("解析put err :", err)
-						}
-						log.Info("getData.Label -> ", getData.Label)
-						getF, _ := GetDataMap.Load(getData.Id)
-						getF.(*GetData).Response = getData.Response
-						getF.(*GetData).ctxChan <- true
-					}
-
-				}
-			}()
-
-		}
-	}()
+func (c *Client) Run() {
 
 	// 时间轮,心跳维护，动态刷新签名
 	c.timeWheel()
@@ -156,7 +79,110 @@ func NewClient(host string, conf ...ClientConf) *Client {
 		}
 	}()
 
-	return c
+	// 启动与servers进行交互,外部不可操作
+	data := make([]byte, 1024)
+	for {
+		n, remoteAddr, err := c.Conn.ReadFromUDP(data)
+		if err != nil {
+			log.InfoF("error during read: %s", err.Error())
+			c.state = 0 // 连接有异常更新连接状态
+			continue
+		}
+		log.InfoF("<%s> %s\n", remoteAddr, data[:n])
+		log.Info("解包....size = ", n)
+		packet, err := PacketDecrypt(c.secretKey, data, n)
+		if err != nil {
+			log.Error("错误的包 err:", err)
+			continue
+		}
+		go func() {
+			switch packet.Command {
+
+			case CommandNotice: // 来自server端的通知消息
+				log.Info("接收通知 Notice...")
+				notice := &NoticeData{}
+				err := ByteToObj(packet.Data, &notice)
+				if err != nil {
+					log.Error("返回的包解析失败， err = ", err)
+				}
+				log.Info("notice = ", notice)
+				// 异步应答这个通知，然后处理执行通知
+				go func() {
+					notice.Response = []byte("ok")
+					b, err := ObjToByte(notice)
+					if err != nil {
+						log.Error("ObjToByte err = ", err)
+					}
+					pack, err := PacketEncoder(CommandNotice, c.name, c.sign, c.secretKey, b)
+					if err != nil {
+						log.Error(err)
+					}
+					c.Write(pack)
+				}()
+				if fn, ok := c.NoticeHandle[notice.Label]; ok {
+					fn(c, notice.Data)
+				}
+
+			case CommandGet: // TODO 来自server端的get请求
+				log.Info("接收Get请求...")
+				if c.sign != packet.Sign {
+					log.Info("未知主机认证!")
+					return
+				}
+
+			case CommandReply:
+				reply := &Reply{}
+				err := ByteToObj(packet.Data, &reply)
+				if err != nil {
+					log.Error("返回的包解析失败， err = ", err)
+				}
+				log.Info("收到包 id: ", reply.Type)
+
+				switch CommandCode(reply.Type) {
+				case CommandConnect: // 连接包与心跳包的反馈会触发
+					log.Info("收到连接的反馈与下发的签名: ", string(reply.Data))
+					// 存储签名
+					c.sign = string(reply.Data)
+					c.state = 1
+					// 将积压的数据进行发送
+					c.SendBacklog()
+				case CommandPut:
+					if c.sign != packet.Sign {
+						log.Info("未知主机认证!")
+						return
+					}
+					if reply.StateCode != 0 {
+						// 签名错误
+						log.Error("签名错误")
+						c.ConnectServers()
+						break
+					}
+					// 服务端以确认收到删除对应的数据
+					log.Info("putId = ", reply.CtxId)
+					backlogDel(reply.CtxId)
+
+				case CommandGet:
+					if c.sign != packet.Sign {
+						log.Info("未知主机认证!")
+						return
+					}
+					log.Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
+					getData := &GetData{}
+					err := ByteToObj(reply.Data, &getData)
+					if err != nil {
+						log.Error("解析put err :", err)
+					}
+					log.Info("getData.Label -> ", getData.Label)
+					getF, _ := GetDataMap.Load(getData.Id)
+					getF.(*GetData).Response = getData.Response
+					getF.(*GetData).ctxChan <- true
+				}
+
+			}
+		}()
+
+	}
+
 }
 
 func (c *Client) Close() {
@@ -263,6 +289,10 @@ func (c *Client) GetHandleFunc(label string, f func(c *Client, param []byte) (in
 	c.GetHandle[label] = f
 }
 
+func (c *Client) NoticeHandleFunc(label string, f func(c *Client, data []byte)) {
+	c.NoticeHandle[label] = f
+}
+
 // ConnectServers 请求连接服务器，获取签名
 // 内容是发送 Connect code
 func (c *Client) ConnectServers() {
@@ -288,7 +318,7 @@ func (c *Client) DefaultSecretKey() {
 // 时间轮，持续制定时间发送心跳包
 func (c *Client) timeWheel() {
 	go func() {
-		tTime := time.Duration(1) // 时间轮5秒
+		tTime := time.Duration(5) // 时间轮5秒
 		for {
 			// 5s维护一个心跳，s端收到心跳会返回新的签名
 			timer := time.NewTimer(tTime * time.Second)
