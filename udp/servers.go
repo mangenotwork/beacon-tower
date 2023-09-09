@@ -158,35 +158,25 @@ func (s *Servers) Run() {
 
 			case CommandReply: // 收到客户端的回复
 				log.Info("client端的回复...")
-				//if !SignCheck(remoteAddr.String(), packet.Sign) {
-				//	log.Info("签名失败...")
-				//	s.ReplyPut(remoteAddr, 0, 1)
-				//} else {
-				//
-				//reply := &Reply{}
-				//err := ByteToObj(packet.Data, &reply)
-				//if err != nil {
-				//	log.Error("返回的包解析失败， err = ", err)
-				//}
-				//log.Info("收到包 id: ", reply.Type)
-				//switch CommandCode(reply.Type) {
-				//case CommandGet:
-				//	if s.sign != packet.Sign {
-				//		log.Info("未知主机认证!")
-				//		return
-				//	}
-				//	log.Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
-				//	getData := &GetData{}
-				//	err := ByteToObj(reply.Data, &getData)
-				//	if err != nil {
-				//		log.Error("解析put err :", err)
-				//	}
-				//	log.Info("getData.Label -> ", getData.Label)
-				//	getF, _ := GetDataMap.Load(getData.Id)
-				//	getF.(*GetData).Response = getData.Response
-				//	getF.(*GetData).ctxChan <- true
-				//
-				//}
+				reply := &Reply{}
+				err := ByteToObj(packet.Data, &reply)
+				if err != nil {
+					log.Error("返回的包解析失败， err = ", err)
+				}
+				log.Info("收到包 id: ", reply.Type)
+				switch CommandCode(reply.Type) {
+				case CommandGet:
+					log.Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
+					getData := &GetData{}
+					err := ByteToObj(reply.Data, &getData)
+					if err != nil {
+						log.Error("解析put err :", err)
+					}
+					log.Info("getData.Label -> ", getData.Label)
+					getF, _ := GetDataMap.Load(getData.Id)
+					getF.(*GetData).Response = getData.Response
+					getF.(*GetData).ctxChan <- true
+				}
 
 			default:
 				// 未知包丢弃
@@ -205,8 +195,69 @@ func (s *Servers) Write(client *net.UDPAddr, data []byte) {
 	}
 }
 
-// Get  TODO... 向指定 cliet获取数据，  针对name,ip, 获取指定name或ip Client的数据
-func (s *Servers) Get() {}
+func (s *Servers) Get(funcLabel, name string, param []byte) ([]byte, error) {
+	if name == "" {
+		name = formatName(DefaultClientName)
+	}
+	ip, ok := s.GetClientConn(name)
+	if !ok && len(ip) < 1 {
+		return nil, fmt.Errorf("客户端连接不存在")
+	}
+	return s.get(1000, funcLabel, name, ip[0].IP, param)
+}
+
+func (s *Servers) GetAtNumber(funcLabel, name string, param []byte, number int) ([]byte, error) {
+	if name == "" {
+		name = formatName(DefaultClientName)
+	}
+	ip, ok := s.GetClientConn(name)
+	if !ok && len(ip) < number {
+		return nil, fmt.Errorf("客户端连接不存在")
+	}
+	return s.get(1000, funcLabel, name, ip[number].IP, param)
+}
+
+func (s *Servers) GetAtIP(funcLabel, name, ip string, param []byte) ([]byte, error) {
+	return s.get(1000, funcLabel, name, ip, param)
+}
+
+// Get  向指定 client获取数据，  针对name,ip, 获取指定name或ip Client的数据
+// 指定一个超时时间
+func (s *Servers) get(timeOut int, funcLabel, name, ip string, param []byte) ([]byte, error) {
+	getData := &GetData{
+		Label:    funcLabel,
+		Id:       id(),
+		Param:    param,
+		ctxChan:  make(chan bool),
+		Response: make([]byte, 0),
+	}
+	GetDataMap.Store(getData.Id, getData)
+	b, err := ObjToByte(getData)
+	if err != nil {
+		log.Error("ObjToByte err = ", err)
+	}
+
+	c, ok := s.GetClientConnFromIP(name, ip)
+	if !ok {
+		return nil, fmt.Errorf("客户端连接不存在")
+	}
+	sign := SignGet(c.String())
+	packet, err := PacketEncoder(CommandGet, s.name, sign, s.secretKey, b)
+	if err != nil {
+		log.Error(err)
+	}
+	s.Write(c, packet)
+	select {
+	case <-getData.ctxChan:
+		log.Info("收到get返回的数据...")
+		res := getData.Response
+		GetDataMap.Delete(getData.Id)
+		return res, nil
+	case <-time.After(time.Millisecond * time.Duration(timeOut)):
+		GetDataMap.Delete(getData.Id)
+		return nil, fmt.Errorf("请求超时...")
+	}
+}
 
 // Notice  通知方法:针对 name,对Client发送通知
 // 特点: 1. 重试次数 2. 指定时间内重试
@@ -256,6 +307,7 @@ func (s *Servers) Notice(name, label string, data []byte) (string, error) {
 	retryMax := 3 // 最大重试3次
 	for {
 		if retry > retryMax {
+			// TODO 找到是哪个节点未收到通知
 			return "重试次数完，还有客户端未收到通知", fmt.Errorf("重试次数完，还有客户端未收到通知")
 		}
 		timer := time.NewTimer(3 * time.Second) // 3秒重试一次

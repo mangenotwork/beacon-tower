@@ -8,7 +8,7 @@ import (
 func main() {
 	client := udp.NewClient("127.0.0.1:12345")
 	client.ConnectServers() // 连接服务器
-	client.GetHandleFunc("c_get_test", CGetTest)
+	client.GetHandleFunc("getClient", CGetTest)
 	client.NoticeHandleFunc("testNotice", CNoticeTest)
 	client.Run()
 	//udp.TBacklog()

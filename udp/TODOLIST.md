@@ -13,7 +13,12 @@
 - client put场景设计 ok
 - client get场景设计 ok
 - servers notice场景设计 ok
-- servers get场景设计 
+- servers get场景设计 ok
 - 测试并考虑多场景 
 - 测试并考虑分布式场景 
-- 
+- 设计文档
+- 使用文档
+- 性能测试
+- 打包 v0.0.1
+- 实际应用,需求挖掘 构思 v0.0.2
+- 设计tcp

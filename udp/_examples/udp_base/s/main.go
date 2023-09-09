@@ -32,8 +32,10 @@ func main() {
 	go func() {
 		for {
 			//udp.HeartbeatTableShow()
-			rse, err := s.Notice("", "testNotice", []byte("testNotice"))
-			log.Println(rse, err)
+			//rse, err := s.Notice("", "testNotice", []byte("testNotice"))
+			//log.Println(rse, err)
+			rse, err := s.Get("getClient", "", []byte("getClient"))
+			log.Println(string(rse), err)
 			time.Sleep(5 * time.Second)
 		}
 	}()

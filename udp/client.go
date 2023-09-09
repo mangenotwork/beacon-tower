@@ -129,6 +129,21 @@ func (c *Client) Run() {
 					log.Info("未知主机认证!")
 					return
 				}
+				getData := &GetData{}
+				err := ByteToObj(packet.Data, &getData)
+				if err != nil {
+					log.Error("解析put err :", err)
+				}
+				log.Info("getData = ", getData)
+				if fn, ok := c.GetHandle[getData.Label]; ok {
+					code, rse := fn(c, getData.Param)
+					getData.Response = rse
+					gb, err := ObjToByte(getData)
+					if err != nil {
+						log.Error("对象转字节错误...")
+					}
+					c.ReplyGet(getData.Id, code, gb)
+				}
 
 			case CommandReply:
 				reply := &Reply{}
@@ -275,6 +290,25 @@ func (c *Client) get(timeOut int, funcLabel string, param []byte) ([]byte, error
 		return nil, fmt.Errorf("请求超时...")
 	}
 
+}
+
+// ReplyGet 返回put  state:0x0 成功   state:0x1 签名失败  state:2 业务层面的失败
+func (c *Client) ReplyGet(id int64, state int, data []byte) {
+	reply := &Reply{
+		Type:      int(CommandGet),
+		CtxId:     id,
+		Data:      data,
+		StateCode: state,
+	}
+	b, e := ObjToByte(reply)
+	if e != nil {
+		log.Error("打包数据失败, e= ", e)
+	}
+	data, err := PacketEncoder(CommandReply, c.name, c.sign, c.secretKey, b)
+	if err != nil {
+		log.Error(err)
+	}
+	c.Write(data)
 }
 
 func (c *Client) Get(funcLabel string, param []byte) ([]byte, error) {
