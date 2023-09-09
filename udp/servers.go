@@ -2,9 +2,7 @@ package udp
 
 import (
 	"fmt"
-	"github.com/mangenotwork/common/log"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -52,10 +50,10 @@ func NewServers(addr string, port int, conf ...ServersConf) (*Servers, error) {
 	}
 	s.Conn, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(s.Addr), Port: s.Port})
 	if err != nil {
-		log.Error(err)
+		Error(err)
 		return nil, err
 	}
-	log.InfoF("udp server 启动成功 -->  name:%s |  addr: %s  | conn_code: %s \n",
+	InfoF("udp server 启动成功 -->  name:%s |  addr: %s  | conn_code: %s \n",
 		s.name, s.Conn.LocalAddr().String(), s.connectCode)
 	return s, nil
 }
@@ -70,21 +68,21 @@ func (s *Servers) Run() {
 	for {
 		n, remoteAddr, err := s.Conn.ReadFromUDP(data)
 		if err != nil {
-			log.ErrorF("error during read: %s", err)
+			ErrorF("error during read: %s", err)
 		}
-		//log.InfoF("<%s> %s\n", remoteAddr, data[:n])
-		log.Info("解包....size = ", n)
+		//InfoF("<%s> %s\n", remoteAddr, data[:n])
+		Info("解包....size = ", n)
 		packet, err := PacketDecrypt(s.secretKey, data, n)
 		if err != nil {
-			log.Error("错误的包 err:", err)
+			Error("错误的包 err:", err)
 			continue
 		}
 		go func() {
 			switch packet.Command {
 			case CommandConnect, CommandHeartbeat: // 自行维护，外部不可改变
-				log.Info("请求连接或心跳包...")
+				Info("请求连接或心跳包...")
 				if string(packet.Data) != s.connectCode {
-					log.Info("未知客户端，连接code不正确...")
+					Info("未知客户端，连接code不正确...")
 					return
 				}
 
@@ -95,21 +93,21 @@ func (s *Servers) Run() {
 				s.ReplyConnect(remoteAddr)
 
 			case CommandPut: // 提供外部接口，供外部使用
-				log.Info("接收发送来的数据...")
+				Info("接收发送来的数据...")
 				// 验证签名
 				if !SignCheck(remoteAddr.String(), packet.Sign) {
-					log.Info("签名失败...")
+					Info("签名失败...")
 					s.ReplyPut(remoteAddr, 0, 1)
 				} else {
-					log.Info("签名成功...")
-					//log.Info("收到数据: ", string(packet.Data))
+					Info("签名成功...")
+					//Info("收到数据: ", string(packet.Data))
 
 					putData := &PutData{}
-					err := ByteToObj(packet.Data, &putData)
-					if err != nil {
-						log.Error("解析put err :", err)
+					bErr := ByteToObj(packet.Data, &putData)
+					if bErr != nil {
+						Error("解析put err :", bErr)
 					}
-					log.Info("putData.Label -> ", putData.Label)
+					Info("putData.Label -> ", putData.Label)
 					if fn, ok := s.PutHandle[putData.Label]; ok {
 						fn(s, putData.Body)
 					}
@@ -118,61 +116,60 @@ func (s *Servers) Run() {
 				}
 
 			case CommandGet:
-				log.Info("接收Get请求...")
+				Info("接收Get请求...")
 				// 验证签名
 				if !SignCheck(remoteAddr.String(), packet.Sign) {
-					log.Info("签名失败...")
+					Info("签名失败...")
 					s.ReplyPut(remoteAddr, 0, 1)
 				} else {
-					log.Info("签名成功...")
-					//log.Info("收到数据: ", string(packet.Data))
+					Info("签名成功...")
+					//Info("收到数据: ", string(packet.Data))
 
 					getData := &GetData{}
-					err := ByteToObj(packet.Data, &getData)
-					if err != nil {
-						log.Error("解析put err :", err)
+					boErr := ByteToObj(packet.Data, &getData)
+					if boErr != nil {
+						Error("解析put err :", boErr)
 					}
-					log.Info("putData.Label -> ", getData.Label)
+					Info("putData.Label -> ", getData.Label)
 					if fn, ok := s.GetHandle[getData.Label]; ok {
 						code, rse := fn(s, getData.Param)
 						getData.Response = rse
-						gb, err := ObjToByte(getData)
-						if err != nil {
-							log.Error("对象转字节错误...")
+						gb, gbErr := ObjToByte(getData)
+						if gbErr != nil {
+							Error("对象转字节错误...")
 						}
 						s.ReplyGet(remoteAddr, getData.Id, code, gb)
 					}
-
 				}
 
 			case CommandNotice: // 收到客户端通知的响应
-				log.Info("收到客户端通知的响应...")
+				Info("收到客户端通知的响应...")
 				notice := &NoticeData{}
-				err := ByteToObj(packet.Data, &notice)
-				if err != nil {
-					log.Error("返回的包解析失败， err = ", err)
+				bErr := ByteToObj(packet.Data, &notice)
+				if bErr != nil {
+					Error("返回的包解析失败， err = ", bErr)
 				}
 				if v, ok := NoticeDataMap.Load(notice.Id); ok {
 					v.(*NoticeData).ctxChan <- true
 				}
 
 			case CommandReply: // 收到客户端的回复
-				log.Info("client端的回复...")
+				Info("client端的回复...")
 				reply := &Reply{}
-				err := ByteToObj(packet.Data, &reply)
-				if err != nil {
-					log.Error("返回的包解析失败， err = ", err)
+				bErr := ByteToObj(packet.Data, &reply)
+				if bErr != nil {
+					Error("返回的包解析失败， err = ", bErr)
 				}
-				log.Info("收到包 id: ", reply.Type)
+				Info("收到包 id: ", reply.Type)
 				switch CommandCode(reply.Type) {
 				case CommandGet:
-					log.Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
+					Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
 					getData := &GetData{}
-					err := ByteToObj(reply.Data, &getData)
-					if err != nil {
-						log.Error("解析put err :", err)
+					boErr := ByteToObj(reply.Data, &getData)
+					if boErr != nil {
+						Error("解析put err :", boErr)
 					}
-					log.Info("getData.Label -> ", getData.Label)
+					Info("getData.Label -> ", getData.Label)
 					getF, _ := GetDataMap.Load(getData.Id)
 					getF.(*GetData).Response = getData.Response
 					getF.(*GetData).ctxChan <- true
@@ -180,7 +177,7 @@ func (s *Servers) Run() {
 
 			default:
 				// 未知包丢弃
-				log.Info("未知包!!!")
+				Info("未知包!!!")
 				return
 			}
 		}()
@@ -191,7 +188,7 @@ func (s *Servers) Run() {
 func (s *Servers) Write(client *net.UDPAddr, data []byte) {
 	_, err := s.Conn.WriteToUDP(data, client)
 	if err != nil {
-		log.Error(err.Error())
+		Error(err.Error())
 	}
 }
 
@@ -234,7 +231,7 @@ func (s *Servers) get(timeOut int, funcLabel, name, ip string, param []byte) ([]
 	GetDataMap.Store(getData.Id, getData)
 	b, err := ObjToByte(getData)
 	if err != nil {
-		log.Error("ObjToByte err = ", err)
+		Error("ObjToByte err = ", err)
 	}
 
 	c, ok := s.GetClientConnFromIP(name, ip)
@@ -244,12 +241,12 @@ func (s *Servers) get(timeOut int, funcLabel, name, ip string, param []byte) ([]
 	sign := SignGet(c.String())
 	packet, err := PacketEncoder(CommandGet, s.name, sign, s.secretKey, b)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 	s.Write(c, packet)
 	select {
 	case <-getData.ctxChan:
-		log.Info("收到get返回的数据...")
+		Info("收到get返回的数据...")
 		res := getData.Response
 		GetDataMap.Delete(getData.Id)
 		return res, nil
@@ -262,13 +259,13 @@ func (s *Servers) get(timeOut int, funcLabel, name, ip string, param []byte) ([]
 // Notice  通知方法:针对 name,对Client发送通知
 // 特点: 1. 重试次数 2. 指定时间内重试
 func (s *Servers) Notice(name, label string, data []byte) (string, error) {
-	log.Info("发送通知消息......")
+	Info("发送通知消息......")
 	if name == "" {
 		name = formatName(DefaultClientName)
 	}
 	// 直接下发消息，等待c端应答
 	client, ok := s.GetClientConn(name)
-	log.Info("client = ", name, client, ok)
+	Info("client = ", name, client, ok)
 	if !ok {
 		return "未找到客户端", fmt.Errorf("未找到客户端...")
 	}
@@ -288,12 +285,12 @@ func (s *Servers) Notice(name, label string, data []byte) (string, error) {
 				timer := time.NewTimer(10 * time.Second)
 				select {
 				case <-noticeData.ctxChan:
-					log.Info("收到client通知反馈... id = ", noticeData.Id)
+					Info("收到client通知反馈... id = ", noticeData.Id)
 					NoticeDataMap.Delete(noticeData.Id)
 					return
 				case <-timer.C: // 超过10秒，表示已经大于最大重试的时间，释放内存
 					NoticeDataMap.Delete(noticeData.Id)
-					log.Info("超过10秒，表示已经大于最大重试的时间，释放内存")
+					Info("超过10秒，表示已经大于最大重试的时间，释放内存")
 					return
 				}
 			}
@@ -327,17 +324,17 @@ func (s *Servers) noticeSend(packetMap map[*net.UDPAddr]*NoticeData) bool {
 	finish := true
 	for cConn, v := range packetMap {
 		_, has := NoticeDataMap.Load(v.Id)
-		log.Info("发送消息id = ", v.Id, "  -> has = ", has)
+		Info("发送消息id = ", v.Id, "  -> has = ", has)
 		if has {
 			finish = false
 			b, err := ObjToByte(v)
 			if err != nil {
-				log.Error("ObjToByte err = ", err)
+				Error("ObjToByte err = ", err)
 			}
 			sign := SignGet(cConn.String())
 			packet, err := PacketEncoder(CommandNotice, s.name, sign, s.secretKey, b)
 			if err != nil {
-				log.Error(err)
+				Error(err)
 			}
 			s.Write(cConn, packet)
 		}
@@ -354,7 +351,7 @@ type Reply struct {
 
 func (s *Servers) ReplyConnect(client *net.UDPAddr) {
 	sign := createSign()
-	log.Info("生成签名 : ", sign)
+	Info("生成签名 : ", sign)
 	reply := &Reply{
 		Type:      int(CommandConnect),
 		Data:      []byte(sign),
@@ -363,11 +360,11 @@ func (s *Servers) ReplyConnect(client *net.UDPAddr) {
 	}
 	b, e := ObjToByte(reply)
 	if e != nil {
-		log.Error(" e= ", e)
+		Error(" e= ", e)
 	}
 	data, err := PacketEncoder(CommandReply, s.name, sign, s.secretKey, b)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 	// 存储这个 sign  ip+port:sign
 	SignStore(client.String(), sign)
@@ -385,12 +382,12 @@ func (s *Servers) ReplyPut(client *net.UDPAddr, id, state int64) {
 	}
 	b, e := ObjToByte(reply)
 	if e != nil {
-		log.Error("打包数据失败, e= ", e)
+		Error("打包数据失败, e= ", e)
 	}
 	sign := SignGet(client.String())
 	data, err := PacketEncoder(CommandReply, s.name, sign, s.secretKey, b)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 	s.Write(client, data)
 }
@@ -405,12 +402,12 @@ func (s *Servers) ReplyGet(client *net.UDPAddr, id int64, state int, data []byte
 	}
 	b, e := ObjToByte(reply)
 	if e != nil {
-		log.Error("打包数据失败, e= ", e)
+		Error("打包数据失败, e= ", e)
 	}
 	sign := SignGet(client.String())
 	data, err := PacketEncoder(CommandReply, s.name, sign, s.secretKey, b)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 	s.Write(client, data)
 }
@@ -469,10 +466,10 @@ func (s *Servers) ClientJoin(name, ip string, addr *net.UDPAddr) {
 }
 
 func (s *Servers) ClientDiscard(name, ip string) {
-	log.Info("删除离线的c")
+	Info("删除离线的c")
 	if v, ok := s.CMap[name]; ok {
 		for i, c := range v {
-			log.Info(i, c.IP, ip)
+			Info(i, c.IP, ip)
 			if c.IP == ip {
 				v = append(v[:i], v[i+1:]...)
 			}
@@ -507,15 +504,15 @@ func (s *Servers) timeWheel() {
 			timer := time.NewTimer(tTime * time.Second)
 			select {
 			case <-timer.C:
-				//log.Info("时间轮检查c端的连接...")
+				//Info("时间轮检查c端的连接...")
 				t := time.Now().Unix()
 				for k, v := range s.CMap {
 					for _, c := range v {
 						if t-c.Last > 6 { // 这个时间要大于5秒，因为来自c端的心跳就是5秒
-							//log.InfoF("离线服务器名称:%s IP地址:%s  当前t=%d last=%d", k, c.IP, t, c.Last)
+							//InfoF("离线服务器名称:%s IP地址:%s  当前t=%d last=%d", k, c.IP, t, c.Last)
 							s.ClientDiscard(k, c.IP)
 						} else {
-							//log.InfoF("在线服务器名称:%s IP地址:%s  当前t=%d last=%d", k, c.IP, t, c.Last)
+							//InfoF("在线服务器名称:%s IP地址:%s  当前t=%d last=%d", k, c.IP, t, c.Last)
 						}
 					}
 				}
@@ -528,22 +525,4 @@ type ClientConnectObj struct {
 	IP   string
 	Addr *net.UDPAddr
 	Last int64 // 最后一次连接的时间
-}
-
-// TODO ... 要定下来确定ip下的节点离线，还是name下的任意节点离线?
-var HeartbeatTable sync.Map
-
-func HeartbeatTableShow() {
-	log.Info("+++++++++++++++++++++++++++")
-	t := time.Now().Unix()
-	HeartbeatTable.Range(func(key, value any) bool {
-		log.Info(key, value, t)
-		if t-value.(int64) > 5 {
-			log.InfoF("node:%s 离线", key)
-		} else {
-			log.InfoF("node:%s 在线 %d", key, value)
-		}
-		return true
-	})
-	log.Info("+++++++++++++++++++++++++++")
 }

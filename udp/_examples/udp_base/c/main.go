@@ -2,7 +2,6 @@ package main
 
 import (
 	"beacon-tower/udp"
-	"github.com/mangenotwork/common/log"
 )
 
 func main() {
@@ -43,17 +42,17 @@ func main() {
 }
 
 func CaseGet(c *udp.Client, response []byte) {
-	log.Info("get 到的数据: ", string(response))
+	udp.Info("get 到的数据: ", string(response))
 }
 
 func CGetTest(c *udp.Client, param []byte) (int, []byte) {
-	log.Info("获取到的请求参数  param = ", string(param))
+	udp.Info("获取到的请求参数  param = ", string(param))
 	return 0, []byte("客户端名称 client.")
 }
 
 func CNoticeTest(c *udp.Client, data []byte) {
-	log.Info("收到来自服务器的通知，开始执行......")
-	log.Info("data = ", string(data))
+	udp.Info("收到来自服务器的通知，开始执行......")
+	udp.Info("data = ", string(data))
 }
 
 var txt = `hello; 你好这是一个测试数据,哈哈哈哈哈哈，你好你好世界,aaaaaaa!!!!!

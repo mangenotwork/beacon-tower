@@ -14,6 +14,7 @@
 - client get场景设计 ok
 - servers notice场景设计 ok
 - servers get场景设计 ok
+- 移除三方包，自定义日志
 - 测试并考虑多场景 
 - 测试并考虑分布式场景 
 - 设计文档

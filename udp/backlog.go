@@ -3,7 +3,6 @@ package udp
 import (
 	"bufio"
 	"fmt"
-	"github.com/mangenotwork/common/log"
 	"io"
 	"io/ioutil"
 	"os"
@@ -37,7 +36,7 @@ func backlogDel(putId int64) {
 // 当监听到非强制kill把数据持久化
 func backlogStorage() {
 	if backlogCount > backlogCountMax {
-		log.Error("触发持久化...... backlogCount = ", backlogCount)
+		Error("触发持久化...... backlogCount = ", backlogCount)
 		toUdb()
 	}
 }
@@ -48,46 +47,33 @@ func toUdb() {
 	}
 	file, err := os.OpenFile(fmt.Sprintf(backlogFile, time.Now().Unix()), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 	defer func() {
 		_ = file.Close()
 	}()
 	backlog.Range(func(key, value any) bool {
-		vb, err := ObjToByte(value)
-		_, err = file.Write(vb)
-		_, err = file.Write([]byte("\n"))
-		if err != nil {
-			log.Error(err)
+		vb, vbErr := ObjToByte(value)
+		_, vbErr = file.Write(vb)
+		_, vbErr = file.Write([]byte("\n"))
+		if vbErr != nil {
+			Error(vbErr)
 		}
 		backlogDel(key.(int64))
 		return true
 	})
 }
 
-func TBacklog() {
-	go func() {
-		for {
-			time.Sleep(1 * time.Second)
-			backlog.Range(func(key, value any) bool {
-				log.Info("消费..... backlogCount : ", backlogCount)
-				backlogDel(key.(int64))
-				return true
-			})
-		}
-	}()
-}
-
 // BacklogLoad 加载持久化数据 并消费
 func BacklogLoad() {
-	log.Error("加载持久化数据 并消费 backlogCount = ", backlogCount)
+	Error("加载持久化数据 并消费 backlogCount = ", backlogCount)
 	if backlogCount > backlogCountMin {
-		log.Error("当前 队列 大于触发条件不加载 : ", backlogCount)
+		Error("当前 队列 大于触发条件不加载 : ", backlogCount)
 		return
 	}
 	files, err := ioutil.ReadDir(".")
 	if err != nil {
-		log.Error("error reading directory:", err)
+		Error("error reading directory:", err)
 		return
 	}
 	for _, file := range files {
@@ -98,12 +84,12 @@ func BacklogLoad() {
 			if file.Size() == 0 {
 				err := os.Remove(filePath)
 				if err != nil {
-					log.Error(err)
+					Error(err)
 					return
 				}
 			}
 			if file.Size() > 0 {
-				log.Info(file.Name())
+				Info(file.Name())
 				fileToBacklog(filePath)
 				if backlogCount > backlogCountMin {
 					break
@@ -116,7 +102,7 @@ func BacklogLoad() {
 func fileToBacklog(fName string) {
 	f, err := os.Open(fName)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 		return
 	}
 	putDataList1 := make([]PutData, 0)
@@ -125,32 +111,32 @@ func fileToBacklog(fName string) {
 	reader := bufio.NewReader(f)
 	for {
 		n++
-		line, _, err := reader.ReadLine()
-		if err == io.EOF {
+		line, _, linErr := reader.ReadLine()
+		if linErr == io.EOF {
 			break
 		}
-		//log.Info(string(line))
+		//Info(string(line))
 		putData := PutData{}
 		err = ByteToObj(line, &putData)
 		if err != nil {
-			log.Error(err)
+			Error(err)
 			continue
 		}
-		//log.Info("持久化 putData = ", putData)
+		//Info("持久化 putData = ", putData)
 		if n < int64(backlogCountMax/2)+1 {
 			putDataList1 = append(putDataList1, putData)
 		} else {
 			putDataList2 = append(putDataList2, putData)
 		}
 		if err != nil {
-			log.Error(err)
+			Error(err)
 			return
 		}
 	}
 	for _, v := range putDataList1 {
-		log.Error("加入 数据到队列 ... ")
+		Error("加入 数据到队列 ... ")
 		backlogAdd(v.Id, v)
-		log.Error("加入后的count = ", backlogCount)
+		Error("加入后的count = ", backlogCount)
 	}
 	_ = f.Close()
 	resetBacklogFile(fName, putDataList2)
@@ -159,7 +145,7 @@ func fileToBacklog(fName string) {
 func resetBacklogFile(fName string, putDataList []PutData) {
 	err := os.Remove(fName)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 		return
 	}
 	if len(putDataList) < 1 {
@@ -167,16 +153,18 @@ func resetBacklogFile(fName string, putDataList []PutData) {
 	}
 	file, err := os.OpenFile(fName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 		return
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 	for _, v := range putDataList {
-		vb, err := ObjToByte(v)
-		_, err = file.Write(vb)
-		_, err = file.Write([]byte("\n"))
-		if err != nil {
-			log.Error(err)
+		vb, vbErr := ObjToByte(v)
+		_, vbErr = file.Write(vb)
+		_, vbErr = file.Write([]byte("\n"))
+		if vbErr != nil {
+			Error(vbErr)
 		}
 	}
 }

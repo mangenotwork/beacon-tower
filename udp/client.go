@@ -2,7 +2,6 @@ package udp
 
 import (
 	"fmt"
-	"github.com/mangenotwork/common/log"
 	"net"
 	"os"
 	"os/signal"
@@ -53,7 +52,7 @@ func NewClient(host string, conf ...ClientConf) *Client {
 	dstAddr := &net.UDPAddr{IP: sip, Port: sport}
 	c.Conn, err = net.DialUDP("udp", srcAddr, dstAddr)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 
 	return c
@@ -69,7 +68,7 @@ func (c *Client) Run() {
 	go func() {
 		select {
 		case s := <-ch:
-			log.Info("通知退出....")
+			Info("通知退出....")
 			toUdb() // 将积压的数据持久化
 			if i, ok := s.(syscall.Signal); ok {
 				os.Exit(int(i))
@@ -84,38 +83,38 @@ func (c *Client) Run() {
 	for {
 		n, remoteAddr, err := c.Conn.ReadFromUDP(data)
 		if err != nil {
-			log.InfoF("error during read: %s", err.Error())
+			InfoF("error during read: %s", err.Error())
 			c.state = 0 // 连接有异常更新连接状态
 			continue
 		}
-		log.InfoF("<%s> %s\n", remoteAddr, data[:n])
-		log.Info("解包....size = ", n)
+		InfoF("<%s> %s\n", remoteAddr, data[:n])
+		Info("解包....size = ", n)
 		packet, err := PacketDecrypt(c.secretKey, data, n)
 		if err != nil {
-			log.Error("错误的包 err:", err)
+			Error("错误的包 err:", err)
 			continue
 		}
 		go func() {
 			switch packet.Command {
 
 			case CommandNotice: // 来自server端的通知消息
-				log.Info("接收通知 Notice...")
+				Info("接收通知 Notice...")
 				notice := &NoticeData{}
-				err := ByteToObj(packet.Data, &notice)
-				if err != nil {
-					log.Error("返回的包解析失败， err = ", err)
+				bErr := ByteToObj(packet.Data, &notice)
+				if bErr != nil {
+					Error("返回的包解析失败， err = ", err)
 				}
-				log.Info("notice = ", notice)
+				Info("notice = ", notice)
 				// 异步应答这个通知，然后处理执行通知
 				go func() {
 					notice.Response = []byte("ok")
-					b, err := ObjToByte(notice)
-					if err != nil {
-						log.Error("ObjToByte err = ", err)
+					b, e := ObjToByte(notice)
+					if e != nil {
+						Error("ObjToByte err = ", e)
 					}
-					pack, err := PacketEncoder(CommandNotice, c.name, c.sign, c.secretKey, b)
-					if err != nil {
-						log.Error(err)
+					pack, pErr := PacketEncoder(CommandNotice, c.name, c.sign, c.secretKey, b)
+					if pErr != nil {
+						Error(pErr)
 					}
 					c.Write(pack)
 				}()
@@ -123,39 +122,39 @@ func (c *Client) Run() {
 					fn(c, notice.Data)
 				}
 
-			case CommandGet: // TODO 来自server端的get请求
-				log.Info("接收Get请求...")
+			case CommandGet: // 来自server端的get请求
+				Info("接收Get请求...")
 				if c.sign != packet.Sign {
-					log.Info("未知主机认证!")
+					Info("未知主机认证!")
 					return
 				}
 				getData := &GetData{}
-				err := ByteToObj(packet.Data, &getData)
-				if err != nil {
-					log.Error("解析put err :", err)
+				bErr := ByteToObj(packet.Data, &getData)
+				if bErr != nil {
+					Error("解析put err :", bErr)
 				}
-				log.Info("getData = ", getData)
+				Info("getData = ", getData)
 				if fn, ok := c.GetHandle[getData.Label]; ok {
 					code, rse := fn(c, getData.Param)
 					getData.Response = rse
-					gb, err := ObjToByte(getData)
-					if err != nil {
-						log.Error("对象转字节错误...")
+					gb, gbErr := ObjToByte(getData)
+					if gbErr != nil {
+						Error("对象转字节错误...")
 					}
 					c.ReplyGet(getData.Id, code, gb)
 				}
 
 			case CommandReply:
 				reply := &Reply{}
-				err := ByteToObj(packet.Data, &reply)
-				if err != nil {
-					log.Error("返回的包解析失败， err = ", err)
+				bErr := ByteToObj(packet.Data, &reply)
+				if bErr != nil {
+					Error("返回的包解析失败， err = ", bErr)
 				}
-				log.Info("收到包 id: ", reply.Type)
+				Info("收到包 id: ", reply.Type)
 
 				switch CommandCode(reply.Type) {
 				case CommandConnect: // 连接包与心跳包的反馈会触发
-					log.Info("收到连接的反馈与下发的签名: ", string(reply.Data))
+					Info("收到连接的反馈与下发的签名: ", string(reply.Data))
 					// 存储签名
 					c.sign = string(reply.Data)
 					c.state = 1
@@ -163,31 +162,31 @@ func (c *Client) Run() {
 					c.SendBacklog()
 				case CommandPut:
 					if c.sign != packet.Sign {
-						log.Info("未知主机认证!")
+						Info("未知主机认证!")
 						return
 					}
 					if reply.StateCode != 0 {
 						// 签名错误
-						log.Error("签名错误")
+						Error("签名错误")
 						c.ConnectServers()
 						break
 					}
 					// 服务端以确认收到删除对应的数据
-					log.Info("putId = ", reply.CtxId)
+					Info("putId = ", reply.CtxId)
 					backlogDel(reply.CtxId)
 
 				case CommandGet:
 					if c.sign != packet.Sign {
-						log.Info("未知主机认证!")
+						Info("未知主机认证!")
 						return
 					}
-					log.Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
+					Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
 					getData := &GetData{}
-					err := ByteToObj(reply.Data, &getData)
-					if err != nil {
-						log.Error("解析put err :", err)
+					boErr := ByteToObj(reply.Data, &getData)
+					if boErr != nil {
+						Error("解析put err :", boErr)
 					}
-					log.Info("getData.Label -> ", getData.Label)
+					Info("getData.Label -> ", getData.Label)
 					getF, _ := GetDataMap.Load(getData.Id)
 					getF.(*GetData).Response = getData.Response
 					getF.(*GetData).ctxChan <- true
@@ -206,7 +205,7 @@ func (c *Client) Close() {
 	}
 	err := c.Conn.Close()
 	if err != nil {
-		log.Error(err.Error())
+		Error(err.Error())
 	}
 }
 
@@ -216,10 +215,10 @@ func (c *Client) Read(f func(data []byte)) {
 		for {
 			n, remoteAddr, err := c.Conn.ReadFromUDP(data)
 			if err != nil {
-				log.ErrorF("error during read: %s", err.Error())
+				ErrorF("error during read: %s", err.Error())
 			}
-			log.InfoF("<%s> %s\n", remoteAddr, data[:n])
-			log.Info("解包....")
+			InfoF("<%s> %s\n", remoteAddr, data[:n])
+			Info("解包....")
 			_, _ = PacketDecrypt(c.secretKey, data, n)
 			f(data)
 		}
@@ -229,9 +228,9 @@ func (c *Client) Read(f func(data []byte)) {
 func (c *Client) Write(data []byte) {
 	_, err := c.Conn.Write(data)
 	if err != nil {
-		log.ErrorF("error write: %s", err.Error())
+		ErrorF("error write: %s", err.Error())
 	}
-	log.InfoF("<%s>\n", c.Conn.RemoteAddr())
+	InfoF("<%s>\n", c.Conn.RemoteAddr())
 }
 
 // Put client put
@@ -246,16 +245,16 @@ func (c *Client) Put(funcLabel string, data []byte) {
 	backlogAdd(putData.Id, putData)
 	// 未与servers端确认连接，不发送数据
 	if c.state != 1 {
-		log.Info("还未认证连接")
+		Info("还未认证连接")
 		return
 	}
 	b, err := ObjToByte(putData)
 	if err != nil {
-		log.Error("ObjToByte err = ", err)
+		Error("ObjToByte err = ", err)
 	}
 	packet, err := PacketEncoder(CommandPut, c.name, c.sign, c.secretKey, b)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 	c.Write(packet)
 }
@@ -272,16 +271,16 @@ func (c *Client) get(timeOut int, funcLabel string, param []byte) ([]byte, error
 	GetDataMap.Store(getData.Id, getData)
 	b, err := ObjToByte(getData)
 	if err != nil {
-		log.Error("ObjToByte err = ", err)
+		Error("ObjToByte err = ", err)
 	}
 	packet, err := PacketEncoder(CommandGet, c.name, c.sign, c.secretKey, b)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 	c.Write(packet)
 	select {
 	case <-getData.ctxChan:
-		log.Info("收到get返回的数据...")
+		Info("收到get返回的数据...")
 		res := getData.Response
 		GetDataMap.Delete(getData.Id)
 		return res, nil
@@ -302,11 +301,11 @@ func (c *Client) ReplyGet(id int64, state int, data []byte) {
 	}
 	b, e := ObjToByte(reply)
 	if e != nil {
-		log.Error("打包数据失败, e= ", e)
+		Error("打包数据失败, e= ", e)
 	}
 	data, err := PacketEncoder(CommandReply, c.name, c.sign, c.secretKey, b)
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 	c.Write(data)
 }
@@ -332,7 +331,7 @@ func (c *Client) NoticeHandleFunc(label string, f func(c *Client, data []byte)) 
 func (c *Client) ConnectServers() {
 	data, err := PacketEncoder(CommandConnect, c.name, c.sign, c.secretKey, []byte(c.connectCode))
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 	c.Write(data)
 }
@@ -360,10 +359,10 @@ func (c *Client) timeWheel() {
 			case t := <-timer.C:
 				// 这个时候表示连接不存在
 				c.state = 0
-				log.Info("发送心跳...", t)
+				Info("发送心跳...", t)
 				data, err := PacketEncoder(CommandHeartbeat, c.name, c.sign, c.secretKey, []byte(c.connectCode))
 				if err != nil {
-					log.Error(err)
+					Error(err)
 				}
 				c.Write(data)
 			}
@@ -374,14 +373,14 @@ func (c *Client) timeWheel() {
 // SendBacklog 发送积压的数据，
 func (c *Client) SendBacklog() {
 	backlog.Range(func(key, value any) bool {
-		log.Info("重发 key = ", key)
+		Info("重发 key = ", key)
 		b, err := ObjToByte(value.(PutData))
 		if err != nil {
-			log.Error("ObjToByte err = ", err)
+			Error("ObjToByte err = ", err)
 		}
 		packet, err := PacketEncoder(CommandPut, c.name, c.sign, c.secretKey, b)
 		if err != nil {
-			log.Error(err)
+			Error(err)
 		}
 		c.Write(packet)
 		return true

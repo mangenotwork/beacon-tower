@@ -7,7 +7,6 @@ import (
 	"crypto/des"
 	"encoding/binary"
 	"encoding/json"
-	"github.com/mangenotwork/common/log"
 	"io"
 )
 
@@ -67,18 +66,18 @@ func PacketEncoder(cmd CommandCode, name, sign, secret string, data []byte) ([]b
 	} else {
 		_ = binary.Write(buf, binary.LittleEndian, []byte(sign))
 	}
-	//log.Info("源数据 : ", len(data))
+	//Info("源数据 : ", len(data))
 	// 压缩数据
 	//d := GzipCompress(data)
 	d := ZlibCompress(data)
-	//log.Info("压缩后数据长度: ", len(d))
+	//Info("压缩后数据长度: ", len(d))
 
 	// 加密数据
 	d = desECBEncrypt(d, []byte(secret))
-	//log.Info("加密数据 : ", len(d))
+	//Info("加密数据 : ", len(d))
 
 	if len(d) > 540 {
-		log.Error(ErrDataLengthAbove)
+		Error(ErrDataLengthAbove)
 	}
 	err = binary.Write(buf, binary.LittleEndian, d)
 	if err != nil {
@@ -92,7 +91,7 @@ func PacketEncoder(cmd CommandCode, name, sign, secret string, data []byte) ([]b
 func PacketDecrypt(secret string, data []byte, n int) (*Packet, error) {
 	var err error
 	if n < 15 {
-		log.Error("空包")
+		Error("空包")
 		return nil, ErrNonePacket
 	}
 	command := CommandCode(data[0:1][0])
@@ -105,7 +104,7 @@ func PacketDecrypt(secret string, data []byte, n int) (*Packet, error) {
 	//b, err := GzipDecompress(data[15:n])
 	b, err = ZlibDecompress(b)
 	if err != nil {
-		log.Error("解压数据失败 err: ", err)
+		Error("解压数据失败 err: ", err)
 		return nil, err
 	}
 	return &Packet{
@@ -135,7 +134,7 @@ func GzipCompress(src []byte) []byte {
 	_, err = w.Write(src)
 	err = w.Close()
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 	return in.Bytes()
 }
@@ -163,7 +162,7 @@ func ZlibCompress(src []byte) []byte {
 	_, err := writer.Write(src)
 	err = writer.Close()
 	if err != nil {
-		log.Error(err)
+		Error(err)
 	}
 	return buf.Bytes()
 }
