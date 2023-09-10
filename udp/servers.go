@@ -14,8 +14,8 @@ type Servers struct {
 	CMap        map[string][]*ClientConnectObj // 存放客户端连接信息
 	connectCode string                         // 连接code 是静态的由server端配发
 	secretKey   string                         // 数据传输加密解密秘钥
-	PutHandle   ServersPutFunc
-	GetHandle   ServersGetFunc
+	PutHandle   ServersPutFunc                 // PUT类型方法
+	GetHandle   ServersGetFunc                 // GET类型方法
 }
 
 type ServersConf struct {
@@ -87,10 +87,10 @@ func (s *Servers) Run() {
 				}
 
 				// 存储c端的连接
-				s.ClientJoin(packet.Name, remoteAddr.IP.String(), remoteAddr)
+				s.clientJoin(packet.Name, remoteAddr.IP.String(), remoteAddr)
 
 				// 下发签名
-				s.ReplyConnect(remoteAddr)
+				s.replyConnect(remoteAddr)
 
 			case CommandPut: // 提供外部接口，供外部使用
 				Info("接收发送来的数据...")
@@ -181,7 +181,6 @@ func (s *Servers) Run() {
 				return
 			}
 		}()
-		//f(remoteAddr, data)
 	}
 }
 
@@ -301,7 +300,7 @@ func (s *Servers) Notice(name, label string, data []byte) (string, error) {
 		return "通知下发完成", nil
 	}
 	retry := 1    // 重试次数
-	retryMax := 3 // 最大重试3次
+	retryMax := 3 // 最大重试3次  // TODO 可配置
 	for {
 		if retry > retryMax {
 			// TODO 找到是哪个节点未收到通知
@@ -349,7 +348,7 @@ type Reply struct {
 	StateCode int // 状态码  0:成功  1:认证失败  2:自定义错误
 }
 
-func (s *Servers) ReplyConnect(client *net.UDPAddr) {
+func (s *Servers) replyConnect(client *net.UDPAddr) {
 	sign := createSign()
 	Info("生成签名 : ", sign)
 	reply := &Reply{
@@ -430,10 +429,16 @@ func (s *Servers) SetConnectCode(code string) {
 }
 
 func (s *Servers) PutHandleFunc(label string, f func(s *Servers, body []byte)) {
+	if _, ok := s.PutHandle[label]; ok {
+		panic(fmt.Sprintf("put handle func label:%s is exist.", label))
+	}
 	s.PutHandle[label] = f
 }
 
 func (s *Servers) GetHandleFunc(label string, f func(s *Servers, param []byte) (int, []byte)) {
+	if _, ok := s.GetHandle[label]; ok {
+		panic(fmt.Sprintf("get handle func label:%s is exist.", label))
+	}
 	s.GetHandle[label] = f
 }
 
@@ -441,7 +446,7 @@ func (s *Servers) GetServersName() string {
 	return s.name
 }
 
-func (s *Servers) ClientJoin(name, ip string, addr *net.UDPAddr) {
+func (s *Servers) clientJoin(name, ip string, addr *net.UDPAddr) {
 	client := &ClientConnectObj{
 		IP:   ip,
 		Addr: addr,
@@ -479,7 +484,7 @@ func (s *Servers) ClientDiscard(name, ip string) {
 }
 
 func (s *Servers) GetClientConn(name string) ([]*ClientConnectObj, bool) {
-	if v, ok := s.CMap[name]; ok {
+	if v, ok := s.CMap[name]; ok && len(v) > 1 {
 		return v, true
 	}
 	return nil, false
@@ -500,7 +505,7 @@ func (s *Servers) timeWheel() {
 	go func() {
 		tTime := time.Duration(2)
 		for {
-			// 6s检查一次连接
+			// 6s检查一次连接  TODO...  这些时间可配置
 			timer := time.NewTimer(tTime * time.Second)
 			select {
 			case <-timer.C:
@@ -520,6 +525,10 @@ func (s *Servers) timeWheel() {
 		}
 	}()
 }
+
+// TODO ... 获取当前客户端连接情况
+
+// TODO ... 拒绝指定客户端的通讯
 
 type ClientConnectObj struct {
 	IP   string

@@ -54,7 +54,8 @@ func NewClient(host string, conf ...ClientConf) *Client {
 	if err != nil {
 		Error(err)
 	}
-
+	// 连接服务器
+	c.ConnectServers()
 	return c
 }
 

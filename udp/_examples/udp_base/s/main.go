@@ -2,60 +2,70 @@ package main
 
 import (
 	"beacon-tower/udp"
-	"log"
+	"fmt"
 	"os"
 	"time"
 )
 
+// 保存c端put来的数据
 var testFile = "test.txt"
 
-func init() {
-	//list := []int{1}
-	//log.Println(list)
-	//for i, v := range list {
-	//	if v == 1 {
-	//		log.Println("执行删除")
-	//		list = append(list[:i], list[i+1:]...)
-	//	}
-	//}
-	//log.Println(list)
-}
-
 func main() {
-	s, e := udp.NewServers("0.0.0.0", 12345)
-	if e != nil {
-		panic(e)
-	}
-	s.PutHandleFunc("case1", Case1)
-	s.PutHandleFunc("case2", Case2)
-	s.GetHandleFunc("case3", Case3)
-	go func() {
-		for {
-			//udp.HeartbeatTableShow()
-			//rse, err := s.Notice("", "testNotice", []byte("testNotice"))
-			//log.Println(rse, err)
-			rse, err := s.Get("getClient", "", []byte("getClient"))
-			log.Println(string(rse), err)
-			time.Sleep(5 * time.Second)
-		}
-	}()
-
-	s.Run()
-}
-
-func Case1(s *udp.Servers, body []byte) {
-	log.Println("Case1 func --> ")
-}
-
-func Case2(s *udp.Servers, body []byte) {
-	log.Println("Case2 func --> ", string(body))
-	log.Println("servers name = ", s.GetServersName())
-	file, err := os.OpenFile(testFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// 初始化 s端
+	servers, err := udp.NewServers("0.0.0.0", 12345)
 	if err != nil {
 		panic(err)
 	}
-	defer file.Close()
 
+	// 定义put方法
+	servers.PutHandleFunc("case1", Case1)
+	servers.PutHandleFunc("case2", Case2)
+	// 定义get方法
+	servers.GetHandleFunc("case3", Case3)
+
+	// 每5秒发送一个通知
+	go func() {
+		for {
+			time.Sleep(5 * time.Second)
+			// 发送一个通知 [测试put]
+			rse, rseErr := servers.Notice("", "testNotice", []byte("testNotice"))
+			if rseErr != nil {
+				udp.Error(rseErr)
+				udp.Info("[Servers 测试notice] failed")
+				continue
+			}
+			udp.Info("[Servers 测试notice] passed")
+			udp.Info(rse)
+		}
+	}()
+
+	// 启动servers
+	servers.Run()
+}
+
+func Case1(s *udp.Servers, body []byte) {
+	udp.Info("Case1 func --> ")
+	udp.Info("收到的数据: ", string(body))
+	// 发送get,获取客户端信息
+	rse, err := s.Get("getClient", "", []byte("getClient"))
+	if err != nil {
+		udp.Info("[Servers 测试get] failed")
+		return
+	}
+	udp.Info(string(rse), err)
+	udp.Info("[Servers 测试get] passed")
+}
+
+func Case2(s *udp.Servers, body []byte) {
+	udp.Info("Case2 func --> ", string(body))
+	udp.Info("[Client 测试put] passed")
+	file, err := os.OpenFile(testFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		udp.Error(err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
 	content := []byte(string(body) + "\n")
 	_, err = file.Write(content)
 	if err != nil {
@@ -64,6 +74,6 @@ func Case2(s *udp.Servers, body []byte) {
 }
 
 func Case3(s *udp.Servers, param []byte) (int, []byte) {
-	log.Println("获取到的请求参数  param = ", string(param))
-	return 0, []byte("服务器名称 servers.")
+	udp.Info("获取到的请求参数  param = ", string(param))
+	return 0, []byte(fmt.Sprintf("服务器名称 %s.", s.GetServersName()))
 }
