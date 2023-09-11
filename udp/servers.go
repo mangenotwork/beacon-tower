@@ -106,7 +106,8 @@ func (s *Servers) Run() {
 	for {
 		n, remoteAddr, err := s.Conn.ReadFromUDP(data)
 		if err != nil {
-			ErrorF("error during read: %s", err)
+			Error(err)
+			continue
 		}
 		Info("解包....size = ", n)
 		packet, err := PacketDecrypt(s.secretKey, data, n)
