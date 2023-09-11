@@ -27,8 +27,10 @@ func main() {
 	go func() {
 		for {
 			time.Sleep(5 * time.Second)
+			servers.OnLineTable()
 			// 发送一个通知 [测试put]
-			rse, rseErr := servers.Notice("", "testNotice", []byte("testNotice"))
+			rse, rseErr := servers.Notice("", "testNotice", []byte("testNotice"),
+				servers.SetNoticeRetry(2, 3000))
 			if rseErr != nil {
 				udp.Error(rseErr)
 				udp.Info("[Servers 测试notice] failed")

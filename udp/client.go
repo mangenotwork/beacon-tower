@@ -12,15 +12,16 @@ import (
 )
 
 type Client struct {
-	ServersHost  string // serversIP:port
-	Conn         *net.UDPConn
-	name         string // client的名称
-	connectCode  string // 连接code 是静态的由server端配发
-	state        int    // 0:未连接   1:连接成功  2:server端丢失
-	sign         string // 签名
-	secretKey    string // 数据传输加密解密秘钥
-	GetHandle    ClientGetFunc
-	NoticeHandle ClientNoticeFunc
+	ServersHost  string           // serversIP:port
+	Conn         *net.UDPConn     // 连接对象
+	SConn        *net.UDPAddr     // s端连接信息
+	name         string           // client的名称
+	connectCode  string           // 连接code 是静态的由server端配发
+	state        int              // 0:未连接   1:连接成功  2:server端丢失
+	sign         string           // 签名
+	secretKey    string           // 数据传输加密解密秘钥
+	GetHandle    ClientGetFunc    // get方法
+	NoticeHandle ClientNoticeFunc // 接收通知的方法
 }
 
 type ClientConf struct {
@@ -29,7 +30,15 @@ type ClientConf struct {
 	SecretKey   string // 数据传输加密解密秘钥
 }
 
-func NewClient(host string, conf ...ClientConf) *Client {
+func SetClientConf(clientName, connectCode, secretKey string) ClientConf {
+	return ClientConf{
+		Name:        clientName,
+		ConnectCode: connectCode,
+		SecretKey:   secretKey,
+	}
+}
+
+func NewClient(host string, conf ...ClientConf) (*Client, error) {
 	c := &Client{
 		ServersHost:  host,
 		state:        0,
@@ -39,6 +48,20 @@ func NewClient(host string, conf ...ClientConf) *Client {
 	if len(conf) >= 1 {
 		if len(conf[0].ConnectCode) > 0 {
 			c.connectCode = conf[0].ConnectCode
+		}
+		if strings.IndexAny(conf[0].Name, "@") != -1 {
+			return nil, ErrClientNameErr
+		}
+		if len(conf[0].Name) > 7 {
+			return nil, ErrNmeLengthAbove
+		}
+		if len(conf[0].Name) > 0 && len(conf[0].Name) <= 7 {
+			c.name = conf[0].Name
+		}
+		if len(conf[0].SecretKey) != 8 {
+			return nil, fmt.Errorf("秘钥的长度只能为8，并且与Servers端统一")
+		} else {
+			c.secretKey = conf[0].SecretKey
 		}
 	} else {
 		c.DefaultClientName()
@@ -56,20 +79,41 @@ func NewClient(host string, conf ...ClientConf) *Client {
 	}
 	// 连接服务器
 	c.ConnectServers()
-	return c
+	return c, nil
+}
+
+func (c *Client) SetClientName(name string) error {
+	if strings.IndexAny(name, "@") != -1 {
+		return ErrClientNameErr
+	}
+	if len(name) > 0 && len(name) <= 7 {
+		c.name = name
+		return nil
+	}
+	return ErrNmeLengthAbove
+}
+
+func (c *Client) SetConnectCode(code string) {
+	c.connectCode = code
+}
+
+func (c *Client) SetSecretKey(key string) error {
+	if len(key) != 8 {
+		return ErrClientSecretKey
+	}
+	c.secretKey = key
+	return nil
 }
 
 func (c *Client) Run() {
-
 	// 时间轮,心跳维护，动态刷新签名
 	c.timeWheel()
-
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL, syscall.SIGHUP, syscall.SIGQUIT)
 	go func() {
 		select {
 		case s := <-ch:
-			Info("通知退出....")
+			Info("Client退出....")
 			toUdb() // 将积压的数据持久化
 			if i, ok := s.(syscall.Signal); ok {
 				os.Exit(int(i))
@@ -79,7 +123,7 @@ func (c *Client) Run() {
 		}
 	}()
 
-	// 启动与servers进行交互,外部不可操作
+	// 启动与servers进行交互
 	data := make([]byte, 1024)
 	for {
 		n, remoteAddr, err := c.Conn.ReadFromUDP(data)
@@ -88,7 +132,8 @@ func (c *Client) Run() {
 			c.state = 0 // 连接有异常更新连接状态
 			continue
 		}
-		InfoF("<%s> %s\n", remoteAddr, data[:n])
+		c.SConn = remoteAddr
+		Info("server : ", remoteAddr.String())
 		Info("解包....size = ", n)
 		packet, err := PacketDecrypt(c.secretKey, data, n)
 		if err != nil {
@@ -97,8 +142,8 @@ func (c *Client) Run() {
 		}
 		go func() {
 			switch packet.Command {
-
-			case CommandNotice: // 来自server端的通知消息
+			// 来自server端的通知消息
+			case CommandNotice:
 				Info("接收通知 Notice...")
 				notice := &NoticeData{}
 				bErr := ByteToObj(packet.Data, &notice)
@@ -123,7 +168,8 @@ func (c *Client) Run() {
 					fn(c, notice.Data)
 				}
 
-			case CommandGet: // 来自server端的get请求
+			// 来自server端的get请求
+			case CommandGet:
 				Info("接收Get请求...")
 				if c.sign != packet.Sign {
 					Info("未知主机认证!")
@@ -192,12 +238,9 @@ func (c *Client) Run() {
 					getF.(*GetData).Response = getData.Response
 					getF.(*GetData).ctxChan <- true
 				}
-
 			}
 		}()
-
 	}
-
 }
 
 func (c *Client) Close() {
@@ -208,22 +251,6 @@ func (c *Client) Close() {
 	if err != nil {
 		Error(err.Error())
 	}
-}
-
-func (c *Client) Read(f func(data []byte)) {
-	go func() {
-		data := make([]byte, 1024)
-		for {
-			n, remoteAddr, err := c.Conn.ReadFromUDP(data)
-			if err != nil {
-				ErrorF("error during read: %s", err.Error())
-			}
-			InfoF("<%s> %s\n", remoteAddr, data[:n])
-			Info("解包....")
-			_, _ = PacketDecrypt(c.secretKey, data, n)
-			f(data)
-		}
-	}()
 }
 
 func (c *Client) Write(data []byte) {
@@ -287,7 +314,7 @@ func (c *Client) get(timeOut int, funcLabel string, param []byte) ([]byte, error
 		return res, nil
 	case <-time.After(time.Millisecond * time.Duration(timeOut)):
 		GetDataMap.Delete(getData.Id)
-		return nil, fmt.Errorf("请求超时...")
+		return nil, ErrSGetTimeOut(funcLabel, "servers", c.SConn.String())
 	}
 
 }
@@ -352,7 +379,7 @@ func (c *Client) DefaultSecretKey() {
 // 时间轮，持续制定时间发送心跳包
 func (c *Client) timeWheel() {
 	go func() {
-		tTime := time.Duration(5) // 时间轮5秒
+		tTime := time.Duration(HeartbeatTime) // 时间轮5秒
 		for {
 			// 5s维护一个心跳，s端收到心跳会返回新的签名
 			timer := time.NewTimer(tTime * time.Second)

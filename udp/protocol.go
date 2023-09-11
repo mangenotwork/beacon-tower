@@ -43,6 +43,7 @@ type Packet struct {
 
 // PacketEncoder 封包
 func PacketEncoder(cmd CommandCode, name, sign, secret string, data []byte) ([]byte, error) {
+	Info("封包...  ", secret)
 	var (
 		err    error
 		stream []byte
@@ -69,17 +70,17 @@ func PacketEncoder(cmd CommandCode, name, sign, secret string, data []byte) ([]b
 	//Info("源数据 : ", len(data))
 	// 压缩数据
 	//d := GzipCompress(data)
-	d := ZlibCompress(data)
+	dCompress := ZlibCompress(data)
 	//Info("压缩后数据长度: ", len(d))
 
 	// 加密数据
-	d = desECBEncrypt(d, []byte(secret))
+	dEncrypt := DesECBEncrypt(dCompress, []byte(secret))
 	//Info("加密数据 : ", len(d))
 
-	if len(d) > 540 {
+	if len(dEncrypt) > 540 {
 		Error(ErrDataLengthAbove)
 	}
-	err = binary.Write(buf, binary.LittleEndian, d)
+	err = binary.Write(buf, binary.LittleEndian, dEncrypt)
 	if err != nil {
 		return stream, err
 	}
@@ -89,6 +90,7 @@ func PacketEncoder(cmd CommandCode, name, sign, secret string, data []byte) ([]b
 
 // PacketDecrypt 解包
 func PacketDecrypt(secret string, data []byte, n int) (*Packet, error) {
+	Info("解密 ... ", secret)
 	var err error
 	if n < 15 {
 		Error("空包")
@@ -99,10 +101,10 @@ func PacketDecrypt(secret string, data []byte, n int) (*Packet, error) {
 	sign := string(data[8:15])
 	b := data[15:n]
 	// 解密数据
-	b = desECBDecrypt(b, []byte(secret))
+	bDecrypt := DesECBDecrypt(b, []byte(secret))
 	// 解压数据
 	//b, err := GzipDecompress(data[15:n])
-	b, err = ZlibDecompress(b)
+	bDecompress, err := ZlibDecompress(bDecrypt)
 	if err != nil {
 		Error("解压数据失败 err: ", err)
 		return nil, err
@@ -111,7 +113,7 @@ func PacketDecrypt(secret string, data []byte, n int) (*Packet, error) {
 		Command: command,
 		Name:    name,
 		Sign:    sign,
-		Data:    b,
+		Data:    bDecompress,
 	}, nil
 }
 
@@ -181,9 +183,6 @@ func ZlibDecompress(src []byte) ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-// des ecb 加密解密
-// 占定使用这种加密方法，保障抓包数据不是明文
-
 func pkcs5Padding(ciphertext []byte, blockSize int) []byte {
 	padding := blockSize - len(ciphertext)%blockSize
 	text := bytes.Repeat([]byte{byte(padding)}, padding)
@@ -196,7 +195,7 @@ func pkcs5UnPadding(origData []byte) []byte {
 	return origData[:(length - unPadding)]
 }
 
-func desECBEncrypt(data, key []byte) []byte {
+func DesECBEncrypt(data, key []byte) []byte {
 	block, err := des.NewCipher(key)
 	if err != nil {
 		return nil
@@ -216,7 +215,12 @@ func desECBEncrypt(data, key []byte) []byte {
 	return out
 }
 
-func desECBDecrypt(data, key []byte) []byte {
+func DesECBDecrypt(data, key []byte) []byte {
+	defer func() {
+		if r := recover(); r != nil {
+			return
+		}
+	}()
 	block, err := des.NewCipher(key)
 	if err != nil {
 		return nil

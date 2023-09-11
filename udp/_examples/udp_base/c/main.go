@@ -8,8 +8,10 @@ import (
 
 func main() {
 	// 定义客户端
-	client := udp.NewClient("192.168.0.103:12345")
-
+	client, err := udp.NewClient("192.168.3.86:12345")
+	if err != nil {
+		panic(err)
+	}
 	// get方法
 	client.GetHandleFunc("getClient", CGetTest)
 	// 通知方法

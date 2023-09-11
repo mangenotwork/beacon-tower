@@ -3,35 +3,49 @@ package udp
 import (
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
 type Servers struct {
-	Addr        string
-	Port        int
-	Conn        *net.UDPConn
+	Addr        string                         // 地址 默认0.0.0.0
+	Port        int                            // 端口
+	Conn        *net.UDPConn                   // S端的UDP连接对象
 	name        string                         // servers端的名称
 	CMap        map[string][]*ClientConnectObj // 存放客户端连接信息
 	connectCode string                         // 连接code 是静态的由server端配发
 	secretKey   string                         // 数据传输加密解密秘钥
 	PutHandle   ServersPutFunc                 // PUT类型方法
 	GetHandle   ServersGetFunc                 // GET类型方法
+	onLineTable map[string]bool                // c端的在线表 key= name+ip
 }
 
 type ServersConf struct {
 	Name        string // servers端的名称
 	ConnectCode string // 连接code 是静态的由server端配发
-	SecretKey   string // 数据传输加密解密秘钥
+	SecretKey   string // 数据传输加密解密秘钥 8个字节
+}
+
+func SetServersConf(serversName, connectCode, secretKey string) ServersConf {
+	return ServersConf{
+		Name:        serversName,
+		ConnectCode: connectCode,
+		SecretKey:   secretKey,
+	}
 }
 
 func NewServers(addr string, port int, conf ...ServersConf) (*Servers, error) {
 	var err error
+	if len(addr) < 1 {
+		addr = "0.0.0.0"
+	}
 	s := &Servers{
-		Addr:      addr,
-		Port:      port,
-		CMap:      make(map[string][]*ClientConnectObj),
-		PutHandle: make(ServersPutFunc),
-		GetHandle: make(ServersGetFunc),
+		Addr:        addr,
+		Port:        port,
+		CMap:        make(map[string][]*ClientConnectObj),
+		PutHandle:   make(ServersPutFunc),
+		GetHandle:   make(ServersGetFunc),
+		onLineTable: make(map[string]bool),
 	}
 	if len(conf) >= 1 {
 		if len(conf[0].Name) > 0 && len(conf[0].Name) <= 7 {
@@ -42,6 +56,11 @@ func NewServers(addr string, port int, conf ...ServersConf) (*Servers, error) {
 		}
 		if len(conf[0].ConnectCode) > 0 {
 			s.connectCode = conf[0].ConnectCode
+		}
+		if len(conf[0].SecretKey) != 8 {
+			return nil, ErrServersSecretKey
+		} else {
+			s.secretKey = conf[0].SecretKey
 		}
 	} else {
 		s.DefaultServersName()
@@ -58,19 +77,37 @@ func NewServers(addr string, port int, conf ...ServersConf) (*Servers, error) {
 	return s, nil
 }
 
+func (s *Servers) SetServersName(name string) error {
+	if len(name) > 0 && len(name) <= 7 {
+		s.name = name
+		return nil
+	}
+	return ErrNmeLengthAbove
+}
+
+func (s *Servers) SetConnectCode(code string) {
+	s.connectCode = code
+}
+
+func (s *Servers) SetSecretKey(key string) error {
+	if len(key) != 8 {
+		return ErrServersSecretKey
+	}
+	s.secretKey = key
+	return nil
+}
+
 func (s *Servers) Run() {
 
 	// 启动一个时间轮维护c端的连接
 	s.timeWheel()
 
-	// 读取数据s
-	data := make([]byte, 1024)
+	data := make([]byte, 1500)
 	for {
 		n, remoteAddr, err := s.Conn.ReadFromUDP(data)
 		if err != nil {
 			ErrorF("error during read: %s", err)
 		}
-		//InfoF("<%s> %s\n", remoteAddr, data[:n])
 		Info("解包....size = ", n)
 		packet, err := PacketDecrypt(s.secretKey, data, n)
 		if err != nil {
@@ -79,29 +116,22 @@ func (s *Servers) Run() {
 		}
 		go func() {
 			switch packet.Command {
-			case CommandConnect, CommandHeartbeat: // 自行维护，外部不可改变
+			case CommandConnect, CommandHeartbeat:
 				Info("请求连接或心跳包...")
 				if string(packet.Data) != s.connectCode {
 					Info("未知客户端，连接code不正确...")
 					return
 				}
-
 				// 存储c端的连接
 				s.clientJoin(packet.Name, remoteAddr.IP.String(), remoteAddr)
-
 				// 下发签名
 				s.replyConnect(remoteAddr)
 
-			case CommandPut: // 提供外部接口，供外部使用
+			case CommandPut:
 				Info("接收发送来的数据...")
-				// 验证签名
 				if !SignCheck(remoteAddr.String(), packet.Sign) {
-					Info("签名失败...")
 					s.ReplyPut(remoteAddr, 0, 1)
 				} else {
-					Info("签名成功...")
-					//Info("收到数据: ", string(packet.Data))
-
 					putData := &PutData{}
 					bErr := ByteToObj(packet.Data, &putData)
 					if bErr != nil {
@@ -111,26 +141,19 @@ func (s *Servers) Run() {
 					if fn, ok := s.PutHandle[putData.Label]; ok {
 						fn(s, putData.Body)
 					}
-
 					s.ReplyPut(remoteAddr, putData.Id, 0)
 				}
 
 			case CommandGet:
 				Info("接收Get请求...")
-				// 验证签名
 				if !SignCheck(remoteAddr.String(), packet.Sign) {
-					Info("签名失败...")
 					s.ReplyPut(remoteAddr, 0, 1)
 				} else {
-					Info("签名成功...")
-					//Info("收到数据: ", string(packet.Data))
-
 					getData := &GetData{}
 					boErr := ByteToObj(packet.Data, &getData)
 					if boErr != nil {
 						Error("解析put err :", boErr)
 					}
-					Info("putData.Label -> ", getData.Label)
 					if fn, ok := s.GetHandle[getData.Label]; ok {
 						code, rse := fn(s, getData.Param)
 						getData.Response = rse
@@ -144,23 +167,31 @@ func (s *Servers) Run() {
 
 			case CommandNotice: // 收到客户端通知的响应
 				Info("收到客户端通知的响应...")
-				notice := &NoticeData{}
-				bErr := ByteToObj(packet.Data, &notice)
-				if bErr != nil {
-					Error("返回的包解析失败， err = ", bErr)
-				}
-				if v, ok := NoticeDataMap.Load(notice.Id); ok {
-					v.(*NoticeData).ctxChan <- true
+				if !SignCheck(remoteAddr.String(), packet.Sign) {
+					s.ReplyPut(remoteAddr, 0, 1)
+				} else {
+					notice := &NoticeData{}
+					bErr := ByteToObj(packet.Data, &notice)
+					if bErr != nil {
+						Error("返回的包解析失败， err = ", bErr)
+					}
+					if v, ok := NoticeDataMap.Load(notice.Id); ok {
+						v.(*NoticeData).ctxChan <- true
+					}
 				}
 
 			case CommandReply: // 收到客户端的回复
 				Info("client端的回复...")
+				if !SignCheck(remoteAddr.String(), packet.Sign) {
+					s.ReplyPut(remoteAddr, 0, 1)
+					break
+				}
 				reply := &Reply{}
 				bErr := ByteToObj(packet.Data, &reply)
 				if bErr != nil {
 					Error("返回的包解析失败， err = ", bErr)
 				}
-				Info("收到包 id: ", reply.Type)
+				// Info("收到包 id: ", reply.Type)
 				switch CommandCode(reply.Type) {
 				case CommandGet:
 					Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
@@ -192,33 +223,26 @@ func (s *Servers) Write(client *net.UDPAddr, data []byte) {
 }
 
 func (s *Servers) Get(funcLabel, name string, param []byte) ([]byte, error) {
-	if name == "" {
-		name = formatName(DefaultClientName)
-	}
+	return s.GetAtNameTimeOut(DefaultSGetTimeOut, funcLabel, name, param)
+}
+
+func (s *Servers) GetAtNameTimeOut(timeOut int, funcLabel, name string, param []byte) ([]byte, error) {
 	ip, ok := s.GetClientConn(name)
 	if !ok && len(ip) < 1 {
 		return nil, fmt.Errorf("客户端连接不存在")
 	}
-	return s.get(1000, funcLabel, name, ip[0].IP, param)
-}
-
-func (s *Servers) GetAtNumber(funcLabel, name string, param []byte, number int) ([]byte, error) {
-	if name == "" {
-		name = formatName(DefaultClientName)
-	}
-	ip, ok := s.GetClientConn(name)
-	if !ok && len(ip) < number {
-		return nil, fmt.Errorf("客户端连接不存在")
-	}
-	return s.get(1000, funcLabel, name, ip[number].IP, param)
+	return s.get(timeOut, funcLabel, name, ip[0].IP, param)
 }
 
 func (s *Servers) GetAtIP(funcLabel, name, ip string, param []byte) ([]byte, error) {
-	return s.get(1000, funcLabel, name, ip, param)
+	return s.get(DefaultSGetTimeOut, funcLabel, name, ip, param)
+}
+
+func (s *Servers) GetAtIPTimeOut(timeOut int, funcLabel, name, ip string, param []byte) ([]byte, error) {
+	return s.get(timeOut, funcLabel, name, ip, param)
 }
 
 // Get  向指定 client获取数据，  针对name,ip, 获取指定name或ip Client的数据
-// 指定一个超时时间
 func (s *Servers) get(timeOut int, funcLabel, name, ip string, param []byte) ([]byte, error) {
 	getData := &GetData{
 		Label:    funcLabel,
@@ -251,25 +275,43 @@ func (s *Servers) get(timeOut int, funcLabel, name, ip string, param []byte) ([]
 		return res, nil
 	case <-time.After(time.Millisecond * time.Duration(timeOut)):
 		GetDataMap.Delete(getData.Id)
-		return nil, fmt.Errorf("请求超时...")
+		return nil, ErrSGetTimeOut(funcLabel, name, ip)
+	}
+}
+
+type NoticeRetry struct {
+	TimeOutTimer time.Duration // 通知消息超时时间 10s > 重试*重试时间
+	MaxRetry     int           // 通知消息最大重试次数
+	RetryTimer   time.Duration // 重试等待时间
+}
+
+// SetNoticeRetry retryTimer 单位ms
+func (s *Servers) SetNoticeRetry(maxRetry, retryTimer int) *NoticeRetry {
+	return &NoticeRetry{
+		MaxRetry:     maxRetry,
+		RetryTimer:   time.Millisecond * time.Duration(retryTimer),
+		TimeOutTimer: time.Millisecond * time.Duration((maxRetry+1)*retryTimer),
 	}
 }
 
 // Notice  通知方法:针对 name,对Client发送通知
 // 特点: 1. 重试次数 2. 指定时间内重试
-func (s *Servers) Notice(name, label string, data []byte) (string, error) {
+func (s *Servers) Notice(name, label string, data []byte, retryConf *NoticeRetry) (string, error) {
 	Info("发送通知消息......")
 	if name == "" {
 		name = formatName(DefaultClientName)
+	}
+	if retryConf == nil {
+		retryConf = s.SetNoticeRetry(DefaultNoticeMaxRetry, DefaultNoticeRetryTimer)
 	}
 	// 直接下发消息，等待c端应答
 	client, ok := s.GetClientConn(name)
 	Info("client = ", name, client, ok)
 	if !ok {
-		return "未找到客户端", fmt.Errorf("未找到客户端...")
+		return "未找到客户端", ErrNotFondClient(name)
 	}
 	// 组建通知包
-	packetMap := make(map[*net.UDPAddr]*NoticeData, 0)
+	packetMap := make(map[*net.UDPAddr]*NoticeData)
 	for _, c := range client {
 		noticeData := &NoticeData{
 			Label:   label,
@@ -281,7 +323,7 @@ func (s *Servers) Notice(name, label string, data []byte) (string, error) {
 		packetMap[c.Addr] = noticeData
 		go func() {
 			for {
-				timer := time.NewTimer(10 * time.Second)
+				timer := time.NewTimer(retryConf.TimeOutTimer)
 				select {
 				case <-noticeData.ctxChan:
 					Info("收到client通知反馈... id = ", noticeData.Id)
@@ -289,7 +331,7 @@ func (s *Servers) Notice(name, label string, data []byte) (string, error) {
 					return
 				case <-timer.C: // 超过10秒，表示已经大于最大重试的时间，释放内存
 					NoticeDataMap.Delete(noticeData.Id)
-					Info("超过10秒，表示已经大于最大重试的时间，释放内存")
+					Info("超过最大重试的时间，释放内存")
 					return
 				}
 			}
@@ -299,14 +341,13 @@ func (s *Servers) Notice(name, label string, data []byte) (string, error) {
 	if s.noticeSend(packetMap) {
 		return "通知下发完成", nil
 	}
-	retry := 1    // 重试次数
-	retryMax := 3 // 最大重试3次  // TODO 可配置
+	retry := 1 // 重试次数
 	for {
-		if retry > retryMax {
+		if retry > retryConf.MaxRetry {
 			// TODO 找到是哪个节点未收到通知
 			return "重试次数完，还有客户端未收到通知", fmt.Errorf("重试次数完，还有客户端未收到通知")
 		}
-		timer := time.NewTimer(3 * time.Second) // 3秒重试一次
+		timer := time.NewTimer(retryConf.RetryTimer) // 3秒重试一次
 		select {
 		case <-timer.C:
 			// 检查通知
@@ -423,21 +464,16 @@ func (s *Servers) DefaultSecretKey() {
 	s.secretKey = DefaultSecretKey
 }
 
-// SetConnectCode 设置连接code,调用方自定义内容
-func (s *Servers) SetConnectCode(code string) {
-	s.connectCode = code
-}
-
 func (s *Servers) PutHandleFunc(label string, f func(s *Servers, body []byte)) {
 	if _, ok := s.PutHandle[label]; ok {
-		panic(fmt.Sprintf("put handle func label:%s is exist.", label))
+		PanicPutHandleFuncExist(label)
 	}
 	s.PutHandle[label] = f
 }
 
 func (s *Servers) GetHandleFunc(label string, f func(s *Servers, param []byte) (int, []byte)) {
 	if _, ok := s.GetHandle[label]; ok {
-		panic(fmt.Sprintf("get handle func label:%s is exist.", label))
+		PanicGetHandleFuncExist(label)
 	}
 	s.GetHandle[label] = f
 }
@@ -447,6 +483,7 @@ func (s *Servers) GetServersName() string {
 }
 
 func (s *Servers) clientJoin(name, ip string, addr *net.UDPAddr) {
+	Info("将客户端加入clientJoin... ", name, len(name))
 	client := &ClientConnectObj{
 		IP:   ip,
 		Addr: addr,
@@ -464,14 +501,19 @@ func (s *Servers) clientJoin(name, ip string, addr *net.UDPAddr) {
 		}
 	}
 	if isHas {
+		Info("客户端存在...")
 		return
 	}
 	s.CMap[name] = append(s.CMap[name], client)
+	s.onLineTable[fmt.Sprintf("%s@%s", name, ip)] = true
 	return
 }
 
 func (s *Servers) ClientDiscard(name, ip string) {
 	Info("删除离线的c")
+	if name == "" {
+		name = formatName(DefaultClientName)
+	}
 	if v, ok := s.CMap[name]; ok {
 		for i, c := range v {
 			Info(i, c.IP, ip)
@@ -480,11 +522,17 @@ func (s *Servers) ClientDiscard(name, ip string) {
 			}
 		}
 		s.CMap[name] = v
+		s.onLineTable[fmt.Sprintf("%s|%s", name, ip)] = false
 	}
 }
 
 func (s *Servers) GetClientConn(name string) ([]*ClientConnectObj, bool) {
-	if v, ok := s.CMap[name]; ok && len(v) > 1 {
+	if name == "" {
+		name = DefaultClientName
+	}
+	name = formatName(name)
+	Info("获取 client ... ", name, len(name))
+	if v, ok := s.CMap[name]; ok && len(v) > 0 {
 		return v, true
 	}
 	return nil, false
@@ -503,9 +551,8 @@ func (s *Servers) GetClientConnFromIP(name, ip string) (*net.UDPAddr, bool) {
 
 func (s *Servers) timeWheel() {
 	go func() {
-		tTime := time.Duration(2)
+		tTime := time.Duration(ServersTimeWheel)
 		for {
-			// 6s检查一次连接  TODO...  这些时间可配置
 			timer := time.NewTimer(tTime * time.Second)
 			select {
 			case <-timer.C:
@@ -513,8 +560,8 @@ func (s *Servers) timeWheel() {
 				t := time.Now().Unix()
 				for k, v := range s.CMap {
 					for _, c := range v {
-						if t-c.Last > 6 { // 这个时间要大于5秒，因为来自c端的心跳就是5秒
-							//InfoF("离线服务器名称:%s IP地址:%s  当前t=%d last=%d", k, c.IP, t, c.Last)
+						if t-c.Last > HeartbeatTimeLast { // 这个时间要大于5秒，因为来自c端的心跳就是5秒
+							InfoF("离线服务器名称:%s IP地址:%s  当前t=%d last=%d", k, c.IP, t, c.Last)
 							s.ClientDiscard(k, c.IP)
 						} else {
 							//InfoF("在线服务器名称:%s IP地址:%s  当前t=%d last=%d", k, c.IP, t, c.Last)
@@ -526,7 +573,19 @@ func (s *Servers) timeWheel() {
 	}()
 }
 
-// TODO ... 获取当前客户端连接情况
+// OnLineTable 获取当前客户端连接情况
+func (s *Servers) OnLineTable() map[string]bool {
+	for k, v := range s.onLineTable {
+		kList := strings.Split(k, "@")
+		onLine := "在线"
+		if !v {
+			onLine = "离线"
+		}
+		info := fmt.Sprintf("name:%s | ip:%s --> %s", kList[0], kList[1], onLine)
+		Info(info)
+	}
+	return s.onLineTable
+}
 
 // TODO ... 拒绝指定客户端的通讯
 
