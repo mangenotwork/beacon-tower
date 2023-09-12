@@ -11,8 +11,8 @@ const (
 	DefaultClientName       = "client"
 	DefaultSecretKey        = "12345678"
 	DefaultSGetTimeOut      = 1000 // 单位 ms
-	DefaultNoticeMaxRetry   = 3    // 通知消息最大重试次数
-	DefaultNoticeRetryTimer = 3000 // 重试等待时间 单位ms
+	DefaultNoticeMaxRetry   = 10   // 通知消息最大重试次数
+	DefaultNoticeRetryTimer = 100  // 重试等待时间 单位ms
 	HeartbeatTime           = 5    // 5s
 	HeartbeatTimeLast       = 6    // 6s
 	ServersTimeWheel        = 2    // 2s servers 时间轮

@@ -15,8 +15,8 @@ import (
 // backlog 积压的数据，所有发送的数据都会到这里，只有服务端确认的数据才会被删除
 var backlog sync.Map
 var backlogCount int64 = 0
-var backlogCountMax int64 = 10
-var backlogCountMin int64 = 5
+var backlogCountMax int64 = 10000 // 内存中最大积压数据包条数
+var backlogCountMin int64 = 5000  // 持久化加载的最小量级
 var backlogFile = "%d.udb"
 
 func backlogAdd(putId int64, putData PutData) {
@@ -30,13 +30,22 @@ func backlogDel(putId int64) {
 	backlog.Delete(putId)
 }
 
+func backlogLen() int64 {
+	n := 0
+	backlog.Range(func(key, value any) bool {
+		n++
+		return true
+	})
+	return int64(n)
+}
+
 // backlogStorage 持久化方案: 保护内存不持续增长,尽力保证server掉线后数据不丢失，监听非强制kill把数据持久化
 // 只有当积压数据条数大于设定值(backlogCount > max)就将当前所有积压的数据持久化到磁盘，释放内存存放新的数据
 // 当积压数据条数小于设定值(backlogCount < min)就把持久化数据写到积压内存
 // 当监听到非强制kill把数据持久化
 func backlogStorage() {
-	if backlogCount > backlogCountMax {
-		Error("触发持久化...... backlogCount = ", backlogCount)
+	if backlogLen() > backlogCountMax {
+		Error("触发持久化...... backlogCount = ", backlogCount, " 真实len = ", backlogLen())
 		toUdb()
 	}
 }
@@ -66,8 +75,8 @@ func toUdb() {
 
 // BacklogLoad 加载持久化数据 并消费
 func BacklogLoad() {
-	Error("加载持久化数据 并消费 backlogCount = ", backlogCount)
-	if backlogCount > backlogCountMin {
+	Error("加载持久化数据 并消费 backlogCount = ", backlogCount, " 真实len = ", backlogLen())
+	if backlogLen() > backlogCountMin {
 		Error("当前 队列 大于触发条件不加载 : ", backlogCount)
 		return
 	}

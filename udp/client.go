@@ -215,7 +215,7 @@ func (c *Client) Run() {
 					if reply.StateCode != 0 {
 						// 签名错误
 						Error("签名错误")
-						c.ConnectServers()
+						//c.ConnectServers()
 						break
 					}
 					// 服务端以确认收到删除对应的数据
@@ -258,7 +258,6 @@ func (c *Client) Write(data []byte) {
 	if err != nil {
 		ErrorF("error write: %s", err.Error())
 	}
-	InfoF("<%s>\n", c.Conn.RemoteAddr())
 }
 
 // Put client put
@@ -364,6 +363,10 @@ func (c *Client) ConnectServers() {
 	c.Write(data)
 }
 
+func (c *Client) GetName() string {
+	return c.name
+}
+
 func (c *Client) DefaultClientName() {
 	c.name = DefaultClientName
 }
@@ -400,6 +403,7 @@ func (c *Client) timeWheel() {
 
 // SendBacklog 发送积压的数据，
 func (c *Client) SendBacklog() {
+	Info("发送积压数据")
 	backlog.Range(func(key, value any) bool {
 		Info("重发 key = ", key)
 		b, err := ObjToByte(value.(PutData))

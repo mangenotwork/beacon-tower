@@ -56,6 +56,8 @@ Notice
 Get
 1. 获取C端数据
 2. 超时报错
+3. 存储C端的连接信息 一个name对应多个连接地址
+4. 最佳场景是设置每个C端独立名称对应一个连接地址
 
 #### C 端有 Put(发送), Get(获取) 两种通讯方法
 
@@ -117,7 +119,7 @@ func main() {
 		for {
 			time.Sleep(5 * time.Second)
 			servers.OnLineTable()
-			// 发送一个通知 [测试put]
+			// 发送一个通知
 			rse, rseErr := servers.Notice("", "testNotice", []byte("testNotice"),
 				servers.SetNoticeRetry(2, 3000))
 			if rseErr != nil {
@@ -136,11 +138,9 @@ func Case1(s *udp.Servers, body []byte) {
 	// 发送get,获取客户端信息
 	rse, err := s.Get("getClient", "", []byte("getClient"))
 	if err != nil {
-		udp.Info("[Servers 测试get] failed")
 		return
 	}
 	udp.Info(string(rse), err)
-	udp.Info("[Servers 测试get] passed")
 }
 
 func Case2(s *udp.Servers, body []byte) {

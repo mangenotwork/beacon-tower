@@ -8,16 +8,16 @@ import (
 )
 
 type Servers struct {
-	Addr        string                         // 地址 默认0.0.0.0
-	Port        int                            // 端口
-	Conn        *net.UDPConn                   // S端的UDP连接对象
-	name        string                         // servers端的名称
-	CMap        map[string][]*ClientConnectObj // 存放客户端连接信息
-	connectCode string                         // 连接code 是静态的由server端配发
-	secretKey   string                         // 数据传输加密解密秘钥
-	PutHandle   ServersPutFunc                 // PUT类型方法
-	GetHandle   ServersGetFunc                 // GET类型方法
-	onLineTable map[string]bool                // c端的在线表 key= name+ip
+	Addr        string                                  // 地址 默认0.0.0.0
+	Port        int                                     // 端口
+	Conn        *net.UDPConn                            // S端的UDP连接对象
+	name        string                                  // servers端的名称
+	CMap        map[string]map[string]*ClientConnectObj // 存放客户端连接信息  map:name -> map:ipaddr -> obj
+	connectCode string                                  // 连接code 是静态的由server端配发
+	secretKey   string                                  // 数据传输加密解密秘钥
+	PutHandle   ServersPutFunc                          // PUT类型方法
+	GetHandle   ServersGetFunc                          // GET类型方法
+	onLineTable map[string]bool                         // c端的在线表 key= name+ip
 }
 
 type ServersConf struct {
@@ -42,7 +42,7 @@ func NewServers(addr string, port int, conf ...ServersConf) (*Servers, error) {
 	s := &Servers{
 		Addr:        addr,
 		Port:        port,
-		CMap:        make(map[string][]*ClientConnectObj),
+		CMap:        make(map[string]map[string]*ClientConnectObj),
 		PutHandle:   make(ServersPutFunc),
 		GetHandle:   make(ServersGetFunc),
 		onLineTable: make(map[string]bool),
@@ -195,7 +195,7 @@ func (s *Servers) Run() {
 				// Info("收到包 id: ", reply.Type)
 				switch CommandCode(reply.Type) {
 				case CommandGet:
-					Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
+					InfoF("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
 					getData := &GetData{}
 					boErr := ByteToObj(reply.Data, &getData)
 					if boErr != nil {
@@ -224,15 +224,12 @@ func (s *Servers) Write(client *net.UDPAddr, data []byte) {
 }
 
 func (s *Servers) Get(funcLabel, name string, param []byte) ([]byte, error) {
+	Info("Get...")
 	return s.GetAtNameTimeOut(DefaultSGetTimeOut, funcLabel, name, param)
 }
 
 func (s *Servers) GetAtNameTimeOut(timeOut int, funcLabel, name string, param []byte) ([]byte, error) {
-	ip, ok := s.GetClientConn(name)
-	if !ok && len(ip) < 1 {
-		return nil, fmt.Errorf("客户端连接不存在")
-	}
-	return s.get(timeOut, funcLabel, name, ip[0].IP, param)
+	return s.get(timeOut, funcLabel, name, "", param)
 }
 
 func (s *Servers) GetAtIP(funcLabel, name, ip string, param []byte) ([]byte, error) {
@@ -245,6 +242,7 @@ func (s *Servers) GetAtIPTimeOut(timeOut int, funcLabel, name, ip string, param 
 
 // Get  向指定 client获取数据，  针对name,ip, 获取指定name或ip Client的数据
 func (s *Servers) get(timeOut int, funcLabel, name, ip string, param []byte) ([]byte, error) {
+	Info("get timeOut = ", timeOut)
 	getData := &GetData{
 		Label:    funcLabel,
 		Id:       id(),
@@ -303,6 +301,7 @@ func (s *Servers) Notice(name, label string, data []byte, retryConf *NoticeRetry
 		name = formatName(DefaultClientName)
 	}
 	if retryConf == nil {
+		Info("默认重试等待时间 DefaultNoticeRetryTimer = ", DefaultNoticeRetryTimer)
 		retryConf = s.SetNoticeRetry(DefaultNoticeMaxRetry, DefaultNoticeRetryTimer)
 	}
 	// 直接下发消息，等待c端应答
@@ -348,7 +347,8 @@ func (s *Servers) Notice(name, label string, data []byte, retryConf *NoticeRetry
 			// TODO 找到是哪个节点未收到通知
 			return "重试次数完，还有客户端未收到通知", fmt.Errorf("重试次数完，还有客户端未收到通知")
 		}
-		timer := time.NewTimer(retryConf.RetryTimer) // 3秒重试一次
+		Info("retryConf.RetryTimer = ", retryConf.RetryTimer)
+		timer := time.NewTimer(retryConf.RetryTimer) // 重试
 		select {
 		case <-timer.C:
 			// 检查通知
@@ -490,22 +490,10 @@ func (s *Servers) clientJoin(name, ip string, addr *net.UDPAddr) {
 		Addr: addr,
 		Last: time.Now().Unix(),
 	}
-	isHas := false
-	if v, ok := s.CMap[name]; ok {
-		for _, c := range v {
-			if c.Addr.String() == addr.String() {
-				isHas = true
-				c.Addr = addr
-				c.Last = client.Last
-				break
-			}
-		}
+	if _, ok := s.CMap[name]; !ok {
+		s.CMap[name] = make(map[string]*ClientConnectObj)
 	}
-	if isHas {
-		Info("客户端存在...")
-		return
-	}
-	s.CMap[name] = append(s.CMap[name], client)
+	s.CMap[name][addr.String()] = client
 	s.onLineTable[fmt.Sprintf("%s@%s", name, ip)] = true
 	return
 }
@@ -516,18 +504,15 @@ func (s *Servers) ClientDiscard(name, ip string) {
 		name = formatName(DefaultClientName)
 	}
 	if v, ok := s.CMap[name]; ok {
-		for i, c := range v {
-			Info(i, c.IP, ip)
-			if c.IP == ip {
-				v = append(v[:i], v[i+1:]...)
-			}
+		for k, c := range v {
+			Info(k, c.IP, ip)
+			delete(v, k)
 		}
-		s.CMap[name] = v
 		s.onLineTable[fmt.Sprintf("%s|%s", name, ip)] = false
 	}
 }
 
-func (s *Servers) GetClientConn(name string) ([]*ClientConnectObj, bool) {
+func (s *Servers) GetClientConn(name string) (map[string]*ClientConnectObj, bool) {
 	if name == "" {
 		name = DefaultClientName
 	}
@@ -542,6 +527,9 @@ func (s *Servers) GetClientConn(name string) ([]*ClientConnectObj, bool) {
 func (s *Servers) GetClientConnFromIP(name, ip string) (*net.UDPAddr, bool) {
 	if list, ok := s.GetClientConn(name); ok {
 		for _, c := range list {
+			if ip == "" { // 如果未指定IP 则取 name下的随机一个IP
+				return c.Addr, true
+			}
 			if c.IP == ip {
 				return c.Addr, true
 			}

@@ -25,6 +25,10 @@ func main() {
 			time.Sleep(2 * time.Second)
 
 			// put上传数据到服务端的 case2 方法
+			client.Put("case1", []byte(fmt.Sprintf("%d | hello : %d", time.Now().UnixNano(), n)))
+			udp.Info("n = ", n)
+
+			// put上传数据到服务端的 case2 方法
 			client.Put("case2", []byte(fmt.Sprintf("%d | hello : %d", time.Now().UnixNano(), n)))
 			udp.Info("n = ", n)
 
@@ -46,7 +50,7 @@ func main() {
 
 func CGetTest(c *udp.Client, param []byte) (int, []byte) {
 	udp.Info("获取到的请求参数  param = ", string(param))
-	return 0, []byte(fmt.Sprintf("客户端名称 %s.", c.DefaultClientName))
+	return 0, []byte(fmt.Sprintf("客户端名称 %s.", c.GetName()))
 }
 
 func CNoticeTest(c *udp.Client, data []byte) {
