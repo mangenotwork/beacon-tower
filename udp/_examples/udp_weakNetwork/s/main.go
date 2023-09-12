@@ -1,7 +1,7 @@
 package main
 
 import (
-	"beacon-tower/udp"
+	"github.com/mangenotwork/beacon-tower/udp"
 	"os"
 )
 

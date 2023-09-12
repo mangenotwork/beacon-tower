@@ -1,8 +1,8 @@
 package main
 
 import (
-	"beacon-tower/udp"
 	"fmt"
+	"github.com/mangenotwork/beacon-tower/udp"
 )
 
 func main() {

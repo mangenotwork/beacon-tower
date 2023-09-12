@@ -224,3 +224,12 @@ func CNoticeTest(c *udp.Client, data []byte) {
 
 TODO...
 
+
+## 版本
+
+v0.0.1
+- 基于udp传输协议的基础设计和实现
+- udp传输协议的实例
+
+v0.0.2
+
