@@ -1,4 +1,4 @@
-module udp_base/s
+module udp_base/c
 
 go 1.19
 

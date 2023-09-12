@@ -3,7 +3,7 @@ package main
 import "github.com/mangenotwork/beacon-tower/udp"
 
 func main() {
-	c, err := udp.NewClient("192.168.3.86:12346",
+	c, err := udp.NewClient("127.0.0.1:12346",
 		udp.SetClientConf("node1", "123456", "abc12345"))
 	if err != nil {
 		panic(err)

@@ -8,7 +8,7 @@ import (
 
 func main() {
 	// 定义客户端
-	client, err := udp.NewClient("192.168.3.86:12345")
+	client, err := udp.NewClient("127.0.0.1:12345")
 	if err != nil {
 		panic(err)
 	}
