@@ -128,13 +128,12 @@ func (c *Client) Run() {
 	for {
 		n, remoteAddr, err := c.Conn.ReadFromUDP(data)
 		if err != nil {
-			InfoF("error during read: %s", err.Error())
+			Error(err)
 			c.state = 0 // 连接有异常更新连接状态
 			continue
 		}
 		c.SConn = remoteAddr
-		Info("server : ", remoteAddr.String())
-		Info("解包....size = ", n)
+		// Info("解包....size = ", n)
 		packet, err := PacketDecrypt(c.secretKey, data, n)
 		if err != nil {
 			Error("错误的包 err:", err)
@@ -144,13 +143,11 @@ func (c *Client) Run() {
 			switch packet.Command {
 			// 来自server端的通知消息
 			case CommandNotice:
-				Info("接收通知 Notice...")
 				notice := &NoticeData{}
 				bErr := ByteToObj(packet.Data, &notice)
 				if bErr != nil {
 					Error("返回的包解析失败， err = ", err)
 				}
-				Info("notice = ", notice)
 				// 异步应答这个通知，然后处理执行通知
 				go func() {
 					notice.Response = []byte("ok")
@@ -170,7 +167,6 @@ func (c *Client) Run() {
 
 			// 来自server端的get请求
 			case CommandGet:
-				Info("接收Get请求...")
 				if c.sign != packet.Sign {
 					Info("未知主机认证!")
 					return
@@ -180,7 +176,6 @@ func (c *Client) Run() {
 				if bErr != nil {
 					Error("解析put err :", bErr)
 				}
-				Info("getData = ", getData)
 				if fn, ok := c.GetHandle[getData.Label]; ok {
 					code, rse := fn(c, getData.Param)
 					getData.Response = rse
@@ -197,11 +192,8 @@ func (c *Client) Run() {
 				if bErr != nil {
 					Error("返回的包解析失败， err = ", bErr)
 				}
-				Info("收到包 id: ", reply.Type)
-
 				switch CommandCode(reply.Type) {
 				case CommandConnect: // 连接包与心跳包的反馈会触发
-					Info("收到连接的反馈与下发的签名: ", string(reply.Data))
 					// 存储签名
 					c.sign = string(reply.Data)
 					c.state = 1
@@ -209,34 +201,32 @@ func (c *Client) Run() {
 					c.SendBacklog()
 				case CommandPut:
 					if c.sign != packet.Sign {
-						Info("未知主机认证!")
+						Error("未知主机认证!")
 						return
 					}
 					if reply.StateCode != 0 {
 						// 签名错误
 						Error("签名错误")
-						//c.ConnectServers()
 						break
 					}
 					// 服务端以确认收到删除对应的数据
-					Info("putId = ", reply.CtxId)
 					backlogDel(reply.CtxId)
 
 				case CommandGet:
 					if c.sign != packet.Sign {
-						Info("未知主机认证!")
+						Error("未知主机认证!")
 						return
 					}
-					Info("请求 ID: %d | StateCode: %d", reply.CtxId, reply.StateCode)
 					getData := &GetData{}
 					boErr := ByteToObj(reply.Data, &getData)
 					if boErr != nil {
 						Error("解析put err :", boErr)
 					}
-					Info("getData.Label -> ", getData.Label)
 					getF, _ := GetDataMap.Load(getData.Id)
-					getF.(*GetData).Response = getData.Response
-					getF.(*GetData).ctxChan <- true
+					if getF != nil {
+						getF.(*GetData).Response = getData.Response
+						getF.(*GetData).ctxChan <- true
+					}
 				}
 			}
 		}()
@@ -272,7 +262,6 @@ func (c *Client) Put(funcLabel string, data []byte) {
 	backlogAdd(putData.Id, putData)
 	// 未与servers端确认连接，不发送数据
 	if c.state != 1 {
-		Info("还未认证连接")
 		return
 	}
 	b, err := ObjToByte(putData)
@@ -307,7 +296,6 @@ func (c *Client) get(timeOut int, funcLabel string, param []byte) ([]byte, error
 	c.Write(packet)
 	select {
 	case <-getData.ctxChan:
-		Info("收到get返回的数据...")
 		res := getData.Response
 		GetDataMap.Delete(getData.Id)
 		return res, nil
@@ -387,10 +375,9 @@ func (c *Client) timeWheel() {
 			// 5s维护一个心跳，s端收到心跳会返回新的签名
 			timer := time.NewTimer(tTime * time.Second)
 			select {
-			case t := <-timer.C:
+			case <-timer.C:
 				// 这个时候表示连接不存在
 				c.state = 0
-				Info("发送心跳...", t)
 				data, err := PacketEncoder(CommandHeartbeat, c.name, c.sign, c.secretKey, []byte(c.connectCode))
 				if err != nil {
 					Error(err)
@@ -403,9 +390,10 @@ func (c *Client) timeWheel() {
 
 // SendBacklog 发送积压的数据，
 func (c *Client) SendBacklog() {
-	Info("发送积压数据")
 	backlog.Range(func(key, value any) bool {
-		Info("重发 key = ", key)
+		if value == nil {
+			return true
+		}
 		b, err := ObjToByte(value.(PutData))
 		if err != nil {
 			Error("ObjToByte err = ", err)

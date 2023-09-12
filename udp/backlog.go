@@ -75,7 +75,6 @@ func toUdb() {
 
 // BacklogLoad 加载持久化数据 并消费
 func BacklogLoad() {
-	Error("加载持久化数据 并消费 backlogCount = ", backlogCount, " 真实len = ", backlogLen())
 	if backlogLen() > backlogCountMin {
 		Error("当前 队列 大于触发条件不加载 : ", backlogCount)
 		return

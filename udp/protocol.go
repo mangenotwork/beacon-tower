@@ -43,7 +43,6 @@ type Packet struct {
 
 // PacketEncoder 封包
 func PacketEncoder(cmd CommandCode, name, sign, secret string, data []byte) ([]byte, error) {
-	Info("封包...  ", secret)
 	var (
 		err    error
 		stream []byte
@@ -90,7 +89,6 @@ func PacketEncoder(cmd CommandCode, name, sign, secret string, data []byte) ([]b
 
 // PacketDecrypt 解包
 func PacketDecrypt(secret string, data []byte, n int) (*Packet, error) {
-	Info("解密 ... ", secret)
 	var err error
 	if n < 15 {
 		Error("空包")
