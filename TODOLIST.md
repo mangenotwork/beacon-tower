@@ -19,10 +19,13 @@
 - &#9745; [udp] 文档
 - &#9745; [整体] 打包 v0.0.1
 - &#9745; [udp] 实例编写
-- &#9744; [udp] 实际应用,需求挖掘 构思 v0.0.2
+- &#9745; [udp] 实际应用 -> https://github.com/mangenotwork/website-monitor
+- &#9745; [udp] S端PUT方法增加一个ClientInfo,用于PUT可知client
+- &#9745; [整体] 打包 v0.0.2
+- &#9744; [udp] S端设计一个Set应答，场景如收到C端的PUT可直接Set(作用于get,notice)
+- &#9744; [udp] S端Get可以直接针对ClientInfo下发数据
+- &#9744; [udp] Ping包设计，该Ping工具并不向主机发送ICMP请求，而是向服务器发送一个空udp请求,然后获得反馈
 - &#9744; [tcp] 设计tcp
 
 
 其他设计
-- [udp]该Ping工具并不向主机发送ICMP请求，而是向服务器发送一个空udp请求,然后获得反馈
-- [udp]需要一个S端设置C端名称的方法

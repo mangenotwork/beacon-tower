@@ -136,7 +136,13 @@ func (s *Servers) Run() {
 						Error("解析put err :", bErr)
 					}
 					if fn, ok := s.PutHandle[putData.Label]; ok {
-						fn(s, putData.Body)
+						cInfo := &ClientInfo{
+							Name:        packet.Name,
+							Addr:        remoteAddr,
+							Interactive: time.Now().Unix(),
+							PacketSize:  n,
+						}
+						fn(s, cInfo, putData.Body)
 					}
 					s.ReplyPut(remoteAddr, putData.Id, 0)
 				}
@@ -457,7 +463,7 @@ func (s *Servers) DefaultSecretKey() {
 	s.secretKey = DefaultSecretKey
 }
 
-func (s *Servers) PutHandleFunc(label string, f func(s *Servers, body []byte)) {
+func (s *Servers) PutHandleFunc(label string, f func(s *Servers, c *ClientInfo, body []byte)) {
 	if _, ok := s.PutHandle[label]; ok {
 		PanicPutHandleFuncExist(label)
 	}
