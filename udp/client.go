@@ -60,6 +60,8 @@ func NewClient(host string, conf ...ClientConf) (*Client, error) {
 		}
 		if len(conf[0].SecretKey) != 8 {
 			return nil, fmt.Errorf("秘钥的长度只能为8，并且与Servers端统一")
+		} else if len(conf[0].SecretKey) == 0 {
+			c.secretKey = DefaultSecretKey
 		} else {
 			c.secretKey = conf[0].SecretKey
 		}

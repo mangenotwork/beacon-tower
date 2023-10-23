@@ -16,7 +16,16 @@ type Servers struct {
 	secretKey   string                                  // 数据传输加密解密秘钥
 	PutHandle   ServersPutFunc                          // PUT类型方法
 	GetHandle   ServersGetFunc                          // GET类型方法
-	onLineTable map[string]bool                         // c端的在线表 key= name+ip
+	onLineTable map[string]*ClientConnInfo              // c端的在线表 key= name+ip
+}
+
+type ClientConnInfo struct {
+	Name        string // 客户端名称
+	Online      bool   // 是否存活
+	IP          string // 连接的地址 ip
+	Addr        string // 连接的地址 ip+port
+	LastTime    int64  // 最后一次确认数据包加入存活的时间
+	DiscardTime int64  // 记录断开的时间
 }
 
 type ServersConf struct {
@@ -44,7 +53,7 @@ func NewServers(addr string, port int, conf ...ServersConf) (*Servers, error) {
 		CMap:        make(map[string]map[string]*ClientConnectObj),
 		PutHandle:   make(ServersPutFunc),
 		GetHandle:   make(ServersGetFunc),
-		onLineTable: make(map[string]bool),
+		onLineTable: make(map[string]*ClientConnInfo),
 	}
 	if len(conf) >= 1 {
 		if len(conf[0].Name) > 0 && len(conf[0].Name) <= 7 {
@@ -491,7 +500,14 @@ func (s *Servers) clientJoin(name, ip string, addr *net.UDPAddr) {
 		s.CMap[name] = make(map[string]*ClientConnectObj)
 	}
 	s.CMap[name][addr.String()] = client
-	s.onLineTable[fmt.Sprintf("%s@%s", name, ip)] = true
+	s.onLineTable[fmt.Sprintf("%s@%s", name, ip)] = &ClientConnInfo{
+		Name:        name,
+		Online:      true,
+		IP:          ip,
+		Addr:        addr.String(),
+		LastTime:    time.Now().Unix(),
+		DiscardTime: 0,
+	}
 	return
 }
 
@@ -504,7 +520,10 @@ func (s *Servers) ClientDiscard(name, ip string) {
 			Info(k, c.IP, ip)
 			delete(v, k)
 		}
-		s.onLineTable[fmt.Sprintf("%s|%s", name, ip)] = false
+		if clientConnInfo := s.onLineTable[fmt.Sprintf("%s@%s", name, ip)]; clientConnInfo != nil {
+			clientConnInfo.Online = false
+			clientConnInfo.DiscardTime = time.Now().Unix()
+		}
 	}
 }
 
@@ -565,7 +584,7 @@ func (s *Servers) timeWheel() {
 }
 
 // OnLineTable 获取当前客户端连接情况
-func (s *Servers) OnLineTable() map[string]bool {
+func (s *Servers) OnLineTable() map[string]*ClientConnInfo {
 	return s.onLineTable
 }
 
